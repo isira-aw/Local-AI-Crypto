@@ -117,6 +117,21 @@ def daily_report_job() -> None:
         notify(session, "daily_report", "Daily report generated", context={"date": report.get("date")})
 
 
+@guarded("backup")
+def backup_job() -> None:
+    from crypto_ai.app.services.backup import create_backup, prune_backups, verify_backup
+
+    path = create_backup()
+    result = verify_backup(path)
+    if not result["ok"]:
+        logger.error("Backup verification FAILED for %s: %s", path, result["problems"])
+    else:
+        logger.info("Backup created and verified: %s", path)
+    removed = prune_backups(keep=7)
+    if removed:
+        logger.info("Pruned %s old backup(s).", len(removed))
+
+
 @guarded("drift_check")
 def drift_check_job() -> None:
     from crypto_ai.app.services.maintenance import run_drift_check_job
@@ -161,6 +176,10 @@ def build_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         daily_report_job, "cron", hour=cfg.get("daily_report_hour_utc", 0), minute=0, id="daily_report", replace_existing=True,
+    )
+    scheduler.add_job(
+        backup_job, "cron", hour=cfg.get("backup_hour_utc", 2), minute=0,
+        id="backup", replace_existing=True,
     )
     scheduler.add_job(
         apply_retention_policy_job, "cron", hour=cfg.get("daily_report_hour_utc", 0), minute=15,

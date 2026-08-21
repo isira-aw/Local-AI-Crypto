@@ -47,7 +47,7 @@ checklist and blocks unless **every single item** passes:
 [ ] Exchange connection stable
 [ ] Emergency stop tested
 [ ] Recovery (restart) tested
-[ ] Backup/restore tested at least once
+[ ] Backup/restore tested at least once (see docs/BACKUP_RESTORE.md)
 [ ] API key has withdrawals disabled
 [ ] MODE is TESTNET or LIVE (not RESEARCH/PAPER)
 [ ] You explicitly enabled live trading

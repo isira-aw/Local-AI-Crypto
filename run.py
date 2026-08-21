@@ -221,6 +221,72 @@ def collect_live(
     run_collector(symbol, timeframe)
 
 
+@app.command()
+def backup():
+    """Create a backup archive of the database, config and trained models (Section 33)."""
+    from crypto_ai.app.services.backup import create_backup, verify_backup
+
+    console.rule("Creating backup")
+    path = create_backup()
+    result = verify_backup(path)
+    console.print(f"[green]OK[/green] Backup written: {path}")
+    console.print(f"  size: {result['size_bytes'] / 1024 / 1024:.2f} MB, entries: {result['n_entries']}")
+    console.print("  [dim]Secrets (.env, keys) are deliberately excluded.[/dim]")
+    console.print("\nTest it before you rely on it:")
+    console.print(f"  [bold]python run.py restore {path}[/bold]   (dry run, touches nothing)")
+
+
+@app.command("list-backups")
+def list_backups_cmd():
+    """List backup archives created so far."""
+    from crypto_ai.app.services.backup import list_backups
+
+    rows = list_backups()
+    if not rows:
+        console.print("No backups yet. Create one with: python run.py backup")
+        return
+    table = Table()
+    for col in ("Archive", "Size (MB)", "Created (UTC)"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(Path(r["path"]).name, str(r["size_mb"]), r["modified"])
+    console.print(table)
+
+
+@app.command("verify-backup")
+def verify_backup_cmd(archive: str = typer.Argument(..., help="Path to a .tar.gz backup archive")):
+    """Check a backup archive is complete and contains no secrets."""
+    from crypto_ai.app.services.backup import verify_backup
+
+    result = verify_backup(Path(archive))
+    if result["ok"]:
+        console.print(f"[green]OK[/green] {archive} looks valid ({result['n_entries']} entries)")
+        console.print(result["manifest"])
+    else:
+        console.print(f"[red]PROBLEMS FOUND[/red] in {archive}:")
+        for p_ in result["problems"]:
+            console.print(f"  - {p_}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def restore(
+    archive: str = typer.Argument(..., help="Path to a .tar.gz backup archive"),
+    apply: bool = typer.Option(False, "--apply", help="Actually overwrite live data (default is a dry run)"),
+):
+    """Restore a backup. Defaults to a DRY RUN that touches nothing (Section 33)."""
+    from crypto_ai.app.services.backup import restore_backup
+
+    console.rule("Restore" + ("" if apply else " (dry run)"))
+    result = restore_backup(Path(archive), apply_to_live=apply)
+    console.print(f"Extracted to: {result['extracted_to']}")
+    console.print(f"Manifest: {result['manifest']}")
+    if result["applied_to_live"]:
+        console.print("[green]Live data restored.[/green] A copy of the previous database was kept alongside it.")
+    if result["next_step"]:
+        console.print(result["next_step"])
+
+
 @app.command("drift-check")
 def drift_check():
     """Run a drift check now (feature distribution + live accuracy degradation)."""

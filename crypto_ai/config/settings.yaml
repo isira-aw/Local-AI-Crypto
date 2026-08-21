@@ -127,6 +127,7 @@ scheduler:
   feature_refresh_minutes: 5
   prediction_interval_minutes: 5
   daily_report_hour_utc: 0
+  backup_hour_utc: 2
   weekly_retrain_day: sunday
   weekly_retrain_hour_utc: 1
   health_check_minutes: 1

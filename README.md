@@ -110,6 +110,7 @@ personally cleared the checklist for your own situation.
 | [REAL_TRADING.md](docs/REAL_TRADING.md) | The Section 59 checklist, API key safety, emergency stop |
 | [REGULATORY_NOTES.md](docs/REGULATORY_NOTES.md) | What to check before testnet/live, and when |
 | [POWER_FAILURE_RECOVERY.md](docs/POWER_FAILURE_RECOVERY.md) | 24/7 operation, Windows auto-start, recovery testing |
+| [BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) | What's backed up, what's excluded, and how to verify a restore |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and fixes |
 
 ## Commands
@@ -125,6 +126,10 @@ python run.py evaluate        # score elapsed predictions
 python run.py drift-check     # feature-distribution + accuracy drift check
 python run.py paper           # one manual paper-trading tick
 python run.py report          # daily report
+python run.py backup          # backup database + config + models
+python run.py restore <file>  # restore (dry run by default; --apply to commit)
+python run.py verify-backup <file>
+python run.py list-backups
 python run.py start           # dashboard + scheduler (or --api-only)
 python run.py scheduler       # scheduler only (used by the Docker "scheduler" service)
 python run.py stop            # stop a `start`ed process
