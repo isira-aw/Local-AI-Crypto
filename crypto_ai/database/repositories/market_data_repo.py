@@ -44,6 +44,22 @@ def upsert_candles(session: Session, symbol: str, timeframe: str, rows: list[dic
     return len(rows)
 
 
+def get_price_at_or_after(session: Session, symbol: str, timeframe: str, target: dt.datetime) -> tuple[dt.datetime, float] | None:
+    """
+    First candle at or after `target`. Used by the prediction evaluator
+    (Section 21) to find "the actual price" one horizon later, without
+    requiring an exact timestamp match.
+    """
+    stmt = (
+        select(MarketData.timestamp, MarketData.close)
+        .where(MarketData.symbol == symbol, MarketData.timeframe == timeframe, MarketData.timestamp >= target)
+        .order_by(MarketData.timestamp.asc())
+        .limit(1)
+    )
+    row = session.execute(stmt).first()
+    return (row[0], row[1]) if row else None
+
+
 def get_latest_timestamp(session: Session, symbol: str, timeframe: str) -> dt.datetime | None:
     stmt = (
         select(MarketData.timestamp)
