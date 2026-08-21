@@ -80,7 +80,9 @@ docker-compose.yml  Postgres (+ optional backend/scheduler containers), host-mou
 
 ## What's implemented vs. what's a documented next step
 
-Implemented and tested (128+ tests, `pytest`): the full research loop —
+Implemented and tested (144 tests, `pytest`, plus an end-to-end validation
+harness at `scripts/e2e_validation.py` that runs the whole workflow against a
+simulated exchange): the full research loop —
 historical data download/validation, feature/label generation, walk-forward
 training with a real promotion gate, backtesting, paper trading with crash
 -safe state, prediction accuracy tracking, drift detection, the risk engine,
@@ -116,9 +118,11 @@ personally cleared the checklist for your own situation.
 python run.py setup           # first-run checks + migrations
 python run.py system-check    # hardware-based recommendations
 python run.py download-data   # resumable historical backfill
+python run.py collect-live    # stream live closed candles over WebSocket
 python run.py train           # walk-forward training pipeline
 python run.py backtest        # backtest the current champion
 python run.py evaluate        # score elapsed predictions
+python run.py drift-check     # feature-distribution + accuracy drift check
 python run.py paper           # one manual paper-trading tick
 python run.py report          # daily report
 python run.py start           # dashboard + scheduler (or --api-only)

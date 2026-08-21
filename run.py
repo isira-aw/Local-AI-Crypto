@@ -208,6 +208,39 @@ def download_data():
     console.print(table)
 
 
+@app.command("collect-live")
+def collect_live(
+    symbol: str = typer.Option(None, help="Defaults to config"),
+    timeframe: str = typer.Option(None, help="Defaults to config"),
+):
+    """Stream live closed candles from Binance's public WebSocket into the database."""
+    from crypto_ai.data.collector.live_collector import run_collector
+
+    console.rule("Live market-data collector")
+    console.print("Streaming closed candles. Press Ctrl+C to stop.")
+    run_collector(symbol, timeframe)
+
+
+@app.command("drift-check")
+def drift_check():
+    """Run a drift check now (feature distribution + live accuracy degradation)."""
+    from crypto_ai.app.services.maintenance import run_drift_check_job
+    from crypto_ai.database.base import session_scope
+
+    with session_scope() as session:
+        result = run_drift_check_job(session)
+    if result.get("status") != "ok":
+        console.print(f"[yellow]Drift check skipped: {result.get('status')}[/yellow]")
+        return
+    color = "red" if result["flagged_for_review"] else "green"
+    console.print(f"[{color}]flagged_for_review={result['flagged_for_review']}[/{color}]")
+    console.print(f"max PSI: {result['max_psi']}")
+    if result["reasons"]:
+        for r in result["reasons"]:
+            console.print(f"  - {r}")
+    console.print(f"top drifting features: {result['top_drifting_features']}")
+
+
 @app.command()
 def train(
     symbol: str = typer.Option(None, help="Defaults to config"),

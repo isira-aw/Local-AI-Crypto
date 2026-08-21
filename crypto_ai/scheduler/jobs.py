@@ -117,14 +117,23 @@ def daily_report_job() -> None:
         notify(session, "daily_report", "Daily report generated", context={"date": report.get("date")})
 
 
+@guarded("drift_check")
+def drift_check_job() -> None:
+    from crypto_ai.app.services.maintenance import run_drift_check_job
+
+    with session_scope() as session:
+        result = run_drift_check_job(session)
+        if result.get("flagged_for_review"):
+            logger.warning("Drift flagged for review: %s", result.get("reasons"))
+
+
 @guarded("weekly_retrain")
 def weekly_retrain_job() -> None:
-    logger.info(
-        "weekly_retrain triggered — actual retraining requires a feature/label "
-        "DataFrame prepared from current market_data; wire this up to "
-        "models/training/pipeline.run_training_pipeline() with your symbol's "
-        "latest data once you have enough history collected."
-    )
+    from crypto_ai.app.services.maintenance import run_scheduled_retrain
+
+    with session_scope() as session:
+        result = run_scheduled_retrain(session)
+        logger.info("Scheduled retrain finished with status=%s", result.get("status"))
 
 
 def build_scheduler() -> BackgroundScheduler:
@@ -145,6 +154,10 @@ def build_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         health_check_job, "interval", minutes=cfg.get("health_check_minutes", 1), id="health_check", replace_existing=True,
+    )
+    scheduler.add_job(
+        drift_check_job, "interval", minutes=cfg.get("drift_check_minutes", 60),
+        id="drift_check", replace_existing=True,
     )
     scheduler.add_job(
         daily_report_job, "cron", hour=cfg.get("daily_report_hour_utc", 0), minute=0, id="daily_report", replace_existing=True,

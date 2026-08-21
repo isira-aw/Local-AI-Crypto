@@ -58,18 +58,41 @@ def evaluate_fold(
     )
 
 
+# A model validated on only one or two periods has not actually been
+# shown to be robust across market regimes — which is the entire point of
+# walk-forward validation (Section 13/15). If the available history only
+# supports a single fold, "100% of folds passed" is meaningless, so the
+# result must NOT count as an overall pass no matter how good it looks.
+MIN_FOLDS_FOR_A_MEANINGFUL_PASS = 3
+
+
 def aggregate_walk_forward(fold_evaluations: list[FoldEvaluation], criteria: dict) -> dict:
     n_folds = len(fold_evaluations)
     n_passed = sum(1 for f in fold_evaluations if f.passed)
     pct_passed = n_passed / n_folds if n_folds else 0.0
     min_folds_passed_pct = criteria.get("min_folds_passed_pct", 0.8)
+    min_folds_required = criteria.get("min_folds_required", MIN_FOLDS_FOR_A_MEANINGFUL_PASS)
+
+    enough_folds = n_folds >= min_folds_required
+    overall_pass = enough_folds and pct_passed >= min_folds_passed_pct
+
+    blocking_reason = None
+    if not enough_folds:
+        blocking_reason = (
+            f"only {n_folds} walk-forward fold(s) available, need >= {min_folds_required} "
+            f"for a meaningful robustness check — collect more history "
+            f"(or lower walk_forward.min_train_bars / validation_bars) before trusting this model"
+        )
 
     return {
         "n_folds": n_folds,
         "n_passed": n_passed,
         "pct_passed": round(pct_passed, 4),
         "min_required_pct": min_folds_passed_pct,
-        "overall_pass": n_folds > 0 and pct_passed >= min_folds_passed_pct,
+        "min_folds_required": min_folds_required,
+        "enough_folds": enough_folds,
+        "blocking_reason": blocking_reason,
+        "overall_pass": overall_pass,
         "folds": [
             {
                 "fold_index": f.fold_index,

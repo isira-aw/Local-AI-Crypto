@@ -46,7 +46,7 @@ from sklearn.utils.class_weight import compute_sample_weight
 from sqlalchemy.orm import Session
 
 from crypto_ai.backtesting.engine import BacktestEngine
-from crypto_ai.config.loader import get_settings
+from crypto_ai.config.loader import get_risk_config, get_settings
 from crypto_ai.database.repositories.events_repo import log_event
 from crypto_ai.features.feature_pipeline import FEATURE_VERSION, feature_columns
 from crypto_ai.features.labels import LABEL_VERSION
@@ -106,6 +106,9 @@ def _run_backtest_on_slice(
     fee_pct: float,
     slippage_pct: float,
     timeframe: str,
+    position_size_pct: float,
+    stop_loss_pct: float | None,
+    take_profit_pct: float | None,
 ) -> dict:
     signals = predictions_to_signals(predicted_class, confidence, min_confidence_to_trade)
     bt_df = pd.DataFrame(
@@ -117,6 +120,14 @@ def _run_backtest_on_slice(
     )
     engine = BacktestEngine(
         initial_balance=initial_balance, fee_pct=fee_pct, slippage_pct=slippage_pct, timeframe=timeframe,
+        # Fold backtests MUST use the same position sizing and stop/target
+        # rules the risk engine would actually enforce live. Backtesting at
+        # 100% of equity while risk.yaml caps a real position at 5% would
+        # make promotion criteria (Sharpe, drawdown, return) reflect a
+        # strategy the system is never allowed to run.
+        position_size_pct=position_size_pct,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
     )
     report = engine.run(bt_df)
     return report.metrics
@@ -137,7 +148,15 @@ def train_and_evaluate_algorithm(
     wf_cfg = walk_forward_cfg or settings.get("walk_forward", {})
     label_cfg = labeling_cfg or settings.get("labeling", {})
     criteria = promotion_criteria or settings.get("models.promotion_criteria", {})
-    min_confidence = settings.get("risk.position_sizing.min_confidence_to_trade", 0.55)
+    # Risk parameters live in risk.yaml, NOT settings.yaml (settings.yaml's
+    # `risk:` block only points at the file). Reading them via
+    # settings.get("risk...") silently returns the default and ignores
+    # whatever the user actually configured.
+    risk_cfg = get_risk_config()
+    min_confidence = risk_cfg.get("position_sizing", {}).get("min_confidence_to_trade", 0.55)
+    position_size_pct = risk_cfg.get("position_sizing", {}).get("max_position_percent", 5.0) / 100.0
+    stop_loss_pct = (risk_cfg.get("orders", {}).get("stop_loss_percent") or 0) / 100 or None
+    take_profit_pct = (risk_cfg.get("orders", {}).get("take_profit_percent") or 0) / 100 or None
     paper_balance = settings.get("paper_trading.starting_balance_usdt", 1000.0)
     fee_pct = label_cfg.get("assumed_fee_pct", 0.001)
     slippage_pct = label_cfg.get("assumed_slippage_pct", 0.0005)
@@ -185,6 +204,7 @@ def train_and_evaluate_algorithm(
         bt_metrics = _run_backtest_on_slice(
             merged, fold.val_slice, predicted_class, confidence, min_confidence,
             paper_balance, fee_pct, slippage_pct, timeframe,
+            position_size_pct, stop_loss_pct, take_profit_pct,
         )
 
         fold_eval = evaluate_fold(fold.fold_index, cls_metrics, bt_metrics, criteria)
@@ -199,9 +219,14 @@ def train_and_evaluate_algorithm(
     }
 
     if not wf_summary["overall_pass"]:
+        reject_msg = (
+            wf_summary["blocking_reason"]
+            or f"{algorithm} failed walk-forward criteria ({wf_summary['n_passed']}/{wf_summary['n_folds']} folds passed)"
+        )
+        result["reason"] = reject_msg
         log_event(
             session, component="training", event="algorithm_rejected", severity="INFO",
-            message=f"{algorithm} failed walk-forward criteria ({wf_summary['n_passed']}/{wf_summary['n_folds']} folds passed)",
+            message=reject_msg,
             context={"algorithm": algorithm, "model_name": model_name},
         )
         # Still register it as REJECTED so the attempt is on record
@@ -234,6 +259,7 @@ def train_and_evaluate_algorithm(
     final_bt_metrics = _run_backtest_on_slice(
         merged, plan.final_test_slice, predicted_class, confidence, min_confidence,
         paper_balance, fee_pct, slippage_pct, timeframe,
+        position_size_pct, stop_loss_pct, take_profit_pct,
     )
 
     combined_metrics = {"classification": final_cls_metrics, "backtest": final_bt_metrics}

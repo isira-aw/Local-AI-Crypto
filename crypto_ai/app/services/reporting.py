@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from crypto_ai.config.loader import get_settings
 from crypto_ai.database.models.ml import MLModel, ModelVersion
 from crypto_ai.database.repositories.market_data_repo import get_latest_timestamp, load_candles_df
+from crypto_ai.database.repositories.signals_repo import count_signals_by_type
 from crypto_ai.models.evaluation.prediction_evaluator import summarize_prediction_accuracy
 from crypto_ai.models.registry import registry
 from crypto_ai.monitoring import health
@@ -46,8 +47,18 @@ def _model_status(session: Session, model_name: str) -> dict:
 
 def _recommendation(paper_summary: dict, prediction_summary: dict) -> str:
     n_trades = paper_summary.get("n_trades") or 0
-    if n_trades < 20:
+    n_predictions = prediction_summary.get("n_predictions") or 0
+
+    # Not enough evidence yet, on either axis: keep researching.
+    if n_trades < 20 or n_predictions < 100:
         return RECOMMEND_CONTINUE
+
+    # Section 46: prediction quality and financial results are separate
+    # kinds of success. A strategy whose directional calls are no better
+    # than a coin flip is not testnet-ready even if P/L happens to be up.
+    directional = prediction_summary.get("directional_accuracy_pct")
+    if directional is not None and directional <= 50:
+        return RECOMMEND_NOT_READY
     if (paper_summary.get("total_return_pct") or -1) <= 0:
         return RECOMMEND_NOT_READY
     if (paper_summary.get("max_drawdown_pct") or 100) > 20:
@@ -75,6 +86,10 @@ def generate_daily_report(session: Session, symbol: str | None = None, model_nam
     paper_summary = summarize_paper_trading(session, symbol, timeframe)
     model_status = _model_status(session, model_name)
     system_health = health.run_all_health_checks(session)
+    signal_counts = count_signals_by_type(session, symbol, since=since_yesterday)
+
+    from crypto_ai.app.services.maintenance import get_latest_drift_status
+    drift_status = get_latest_drift_status(session)
 
     report = {
         "date": now.date().isoformat(),
@@ -82,6 +97,8 @@ def generate_daily_report(session: Session, symbol: str | None = None, model_nam
         "symbol": symbol,
         "current_price": current_price,
         "predictions": prediction_summary,
+        "signal_counts": signal_counts,
+        "drift_status": drift_status,
         "paper_trading": paper_summary,
         "model": model_status,
         "system_health": system_health,
@@ -89,6 +106,16 @@ def generate_daily_report(session: Session, symbol: str | None = None, model_nam
         "disclaimer": "Past performance does not guarantee future results.",
     }
     return report
+
+
+def _format_drift(drift: dict | None) -> str:
+    if not drift:
+        return "not yet checked"
+    if drift.get("status") != "ok":
+        return str(drift.get("status"))
+    if drift.get("flagged_for_review"):
+        return f"FLAGGED — {'; '.join(drift.get('reasons', []))}"
+    return f"stable (max PSI {drift.get('max_psi')})"
 
 
 def format_text_report(report: dict) -> str:
@@ -104,6 +131,9 @@ def format_text_report(report: dict) -> str:
         f"  Current price: {report['current_price']}",
         "",
         "Predictions:",
+        f"  BUY: {report.get('signal_counts', {}).get('BUY', 0)}   "
+        f"SELL: {report.get('signal_counts', {}).get('SELL', 0)}   "
+        f"WAIT: {report.get('signal_counts', {}).get('WAIT', 0)}",
         f"  Evaluated: {pred.get('n_predictions', 0)}",
         f"  Accuracy: {pred.get('accuracy_pct')}",
         f"  Directional accuracy: {pred.get('directional_accuracy_pct')}",
@@ -118,6 +148,7 @@ def format_text_report(report: dict) -> str:
         "Model:",
         f"  Champion: {report['model']['champion']}",
         f"  Candidate: {report['model']['candidate']}",
+        f"  Drift status: {_format_drift(report.get('drift_status'))}",
         "",
         "System:",
         f"  Database: {report['system_health'].get('database', {}).get('status')}",

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from crypto_ai.config.loader import get_settings
 from crypto_ai.database.models.trading import PaperTrade, PortfolioSnapshot
+from crypto_ai.utils.timeutils import index_as_utc
 
 
 def get_open_trade(session: Session, symbol: str) -> PaperTrade | None:
@@ -85,4 +86,9 @@ def get_equity_curve(session: Session, mode: str = "PAPER") -> pd.Series:
     rows = session.execute(stmt).scalars().all()
     if not rows:
         return pd.Series(dtype=float)
-    return pd.Series([r.total_equity for r in rows], index=[r.timestamp for r in rows], name="equity")
+    # Normalize the index to tz-aware UTC: SQLite returns naive datetimes
+    # while Postgres returns aware ones, and callers compare this index
+    # against tz-aware "now" values.
+    return pd.Series(
+        [r.total_equity for r in rows], index=index_as_utc([r.timestamp for r in rows]), name="equity",
+    )

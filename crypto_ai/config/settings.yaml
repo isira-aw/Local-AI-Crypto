@@ -42,6 +42,9 @@ data:
     "4h": null
     "1d": null
     logs: 30          # days
+    # Mark-to-market snapshots are written every bar and are re-derivable,
+    # unlike trades/predictions which are kept permanently.
+    portfolio_snapshots: 90
     predictions: null # keep forever
     trades: null      # keep forever (permanent unless manually deleted)
 
@@ -94,6 +97,10 @@ models:
   # These are evaluated on EVERY walk-forward fold, not just the final
   # test set — see models/evaluation/criteria.py.
   promotion_criteria:
+    # A single-fold "100% passed" proves nothing about robustness across
+    # market regimes, so a run with fewer folds than this can never count
+    # as an overall pass regardless of its metrics.
+    min_folds_required: 3
     min_folds_passed_pct: 0.8      # must pass on >=80% of folds
     min_precision: 0.52             # only slightly better than coin-flip is fine;
                                      # edge comes from many small correct bets

@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from crypto_ai.config.loader import get_settings
 from crypto_ai.database.models.market import MarketData
 from crypto_ai.database.models.monitoring import HealthCheck, SystemEvent
+from crypto_ai.database.models.trading import PortfolioSnapshot
 from crypto_ai.database.repositories.events_repo import log_event
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,16 @@ def apply_retention_policy(session: Session, now: dt.datetime | None = None) -> 
         deleted["system_events"] = result.rowcount or 0
         result = session.execute(delete(HealthCheck).where(HealthCheck.timestamp < cutoff))
         deleted["health_checks"] = result.rowcount or 0
+
+    # Portfolio snapshots are written on EVERY bar (~105k rows/year on a
+    # 5m timeframe), so they need a bound too. Closed trades and
+    # predictions are the permanent record and are never touched here;
+    # a snapshot is a redundant mark-to-market that can be re-derived.
+    snapshot_days = retention.get("portfolio_snapshots", 90)
+    if snapshot_days is not None:
+        cutoff = now - dt.timedelta(days=snapshot_days)
+        result = session.execute(delete(PortfolioSnapshot).where(PortfolioSnapshot.timestamp < cutoff))
+        deleted["portfolio_snapshots"] = result.rowcount or 0
 
     total = sum(deleted.values())
     if total:

@@ -70,12 +70,25 @@ training is done.
 
 A model only becomes a `CANDIDATE` if it passes on enough folds (default:
 80%, see `models.promotion_criteria.min_folds_passed_pct` in
-`settings.yaml`). "Passing a fold" requires **all** of:
+`settings.yaml`) **and** if there were enough folds to begin with
+(`min_folds_required`, default 3).
+
+That second condition matters more than it looks. With limited history the
+fold generator can only produce one fold — and "1 of 1 folds passed" is
+100%, which would sail past a percentage-based threshold while proving
+nothing about robustness across market regimes. A run with too few folds is
+therefore rejected outright, with a message telling you to collect more
+history (or lower `walk_forward.min_train_bars` / `validation_bars`).
+
+"Passing a fold" requires **all** of:
 
 - Precision above a minimum (directional accuracy on BUY/SELL calls)
 - Maximum drawdown within a limit
 - A minimum Sharpe ratio (risk-adjusted return, from a realistic backtest of
-  that fold's signals)
+  that fold's signals — run at the **same position size and stop/target
+  levels the risk engine would actually enforce live**, read from
+  `risk.yaml`, so promotion is never decided on an exposure the system is
+  not allowed to take)
 - A minimum number of trades (so the numbers aren't from 2 lucky trades)
 
 Failing any fold criterion counts against the model. A model that clears
@@ -130,6 +143,10 @@ document. It only explains an already-made decision in plain language
 
 ## Troubleshooting
 
+- **"only N walk-forward fold(s) available, need >= 3"**: you don't have
+  enough history for a meaningful robustness check. Download more data —
+  the defaults need roughly 44k bars (about 5 months of 5m candles) to
+  produce the full 5 folds.
 - **"No model passed walk-forward validation"**: normal, especially with
   limited history. Try downloading more data, or (for experimentation only)
   loosen `models.promotion_criteria` in `settings.yaml` — but understand

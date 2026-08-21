@@ -46,7 +46,10 @@ from crypto_ai.models.registry import registry
 from crypto_ai.paper_trading.engine import PaperTradingEngine
 from crypto_ai.paper_trading.portfolio import get_equity_curve
 from crypto_ai.risk.manager import RiskManager, RiskState
+from crypto_ai.utils.timeutils import as_utc, utc_now
+from crypto_ai.database.repositories.signals_repo import save_signal
 from crypto_ai.strategies.ml_strategy import STRATEGY_VERSION
+from crypto_ai.strategies.signal_engine import build_signal
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ MIN_BARS_FOR_FEATURES = 250  # comfortably more than the longest indicator windo
 
 
 def get_current_risk_state(session: Session, mode: str = "PAPER", now: dt.datetime | None = None) -> RiskState:
-    now = now or dt.datetime.now(dt.timezone.utc)
+    now = as_utc(now) or utc_now()
     equity_curve = get_equity_curve(session, mode=mode)
 
     if equity_curve.empty:
@@ -83,7 +86,7 @@ def get_current_risk_state(session: Session, mode: str = "PAPER", now: dt.dateti
         if t.pnl is not None and t.pnl < 0:
             consecutive_losses += 1
             if last_loss_at is None:
-                last_loss_at = t.exit_time
+                last_loss_at = as_utc(t.exit_time)
         else:
             break
 
@@ -143,15 +146,45 @@ def run_prediction_and_paper_trade_tick(
     data_version = compute_data_version(symbol, timeframe, df)
     from crypto_ai.models.evaluation.prediction_evaluator import record_prediction
 
-    record_prediction(
+    prediction = record_prediction(
         session, symbol, timeframe, latest_timestamp, label_cfg.get("horizon_bars", 12),
         data_version, champion.feature_version, champion.version_label, STRATEGY_VERSION,
         predicted_class, confidence, probabilities, latest_close,
     )
 
+    # Build the structured Section 19 signal. The risk engine's verdict —
+    # not the model's raw class — is what actually gets acted on, and the
+    # reason codes record why if they differ.
+    signal_obj = build_signal(
+        symbol=symbol,
+        timestamp=latest_timestamp,
+        predicted_class=predicted_class,
+        confidence=confidence,
+        risk_score=decision.risk_score,
+        model_version=champion.version_label,
+        strategy_version=STRATEGY_VERSION,
+        trading_signal_override="WAIT" if decision.allowed_signal not in ("BUY", "SELL") else None,
+        reason_codes=decision.reason_codes,
+    )
+
+    explanation = None
+    if explain:
+        explanation = explain_signal({
+            "symbol": symbol, "price": latest_close, "signal": signal_obj.signal,
+            "confidence": confidence, "risk_score": decision.risk_score,
+        })
+        signal_obj.llm_explanation = explanation
+
+    save_signal(session, signal_obj, prediction_id=prediction.id)
+
+    # decision.position_size_pct is a PERCENT (e.g. 5.0); the engine wants a
+    # 0-1 fraction of equity. A 0.0 size means "do not open" — never fall
+    # back to 1.0 (100% of the account), which is what the previous
+    # `or 1.0` did.
+    position_fraction = decision.position_size_pct / 100.0
     engine = PaperTradingEngine(
         symbol=symbol,
-        position_size_pct=decision.position_size_pct / 100 if decision.position_size_pct else 1.0,
+        position_size_pct=position_fraction,
         stop_loss_pct=(risk_cfg.get("orders", {}).get("stop_loss_percent") or 0) / 100 or None,
         take_profit_pct=(risk_cfg.get("orders", {}).get("take_profit_percent") or 0) / 100 or None,
     )
@@ -162,13 +195,6 @@ def run_prediction_and_paper_trade_tick(
     )
     session.commit()
 
-    explanation = None
-    if explain:
-        explanation = explain_signal({
-            "symbol": symbol, "price": latest_close, "signal": decision.allowed_signal,
-            "confidence": confidence, "risk_score": decision.risk_score,
-        })
-
     return {
         "status": "ok",
         "symbol": symbol,
@@ -177,6 +203,7 @@ def run_prediction_and_paper_trade_tick(
         "predicted_class": predicted_class,
         "confidence": confidence,
         "final_signal": decision.allowed_signal,
+        "signal": signal_obj.signal,
         "risk_score": decision.risk_score,
         "reason_codes": decision.reason_codes,
         "action": action,

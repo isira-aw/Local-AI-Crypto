@@ -24,7 +24,8 @@ from crypto_ai.models.evaluation.prediction_evaluator import summarize_predictio
 from crypto_ai.llm.client import check_llm_health
 from crypto_ai.models.registry import registry
 from crypto_ai.monitoring import health
-from crypto_ai.monitoring.drift import DriftReport
+from crypto_ai.app.services.maintenance import get_latest_drift_status
+from crypto_ai.database.repositories.signals_repo import get_latest_signal, get_recent_signals
 from crypto_ai.monitoring.metrics import get_resource_usage
 from crypto_ai.paper_trading.portfolio import get_closed_trades
 from crypto_ai.paper_trading.simulator import summarize_paper_trading
@@ -57,6 +58,8 @@ def overview(db: Session = Depends(get_db)):
     paper_summary = summarize_paper_trading(db, symbol, timeframe)
     position = get_position(db, symbol)
     champion = registry.get_champion(db, "btc_direction_classifier")
+    latest_signal = get_latest_signal(db, symbol)
+    drift = get_latest_drift_status(db)
 
     return {
         "mode": settings.mode,
@@ -66,6 +69,17 @@ def overview(db: Session = Depends(get_db)):
         "current_position": position,
         "paper_trading_summary": paper_summary,
         "champion_model": champion.version_label if champion else None,
+        "current_signal": (
+            {
+                "signal": latest_signal.signal,
+                "confidence": latest_signal.confidence,
+                "risk_score": latest_signal.risk_score,
+                "reason_codes": latest_signal.reason_codes,
+                "timestamp": latest_signal.timestamp.isoformat(),
+            }
+            if latest_signal else None
+        ),
+        "drift_status": drift,
         "trading_enabled": settings.safety.trading_enabled,
         "emergency_stop": is_emergency_stop_active(),
         "warning": "Past performance does not guarantee future results.",
@@ -110,6 +124,16 @@ def ai_page(db: Session = Depends(get_db)):
         "champion_metrics": champion.metrics if champion else None,
         "prediction_accuracy": accuracy,
         "llm_status": check_llm_health(),
+        "drift_status": get_latest_drift_status(db),
+        "recent_signals": [
+            {
+                "timestamp": s_.timestamp.isoformat(), "signal": s_.signal,
+                "confidence": s_.confidence, "risk_score": s_.risk_score,
+                "reason_codes": s_.reason_codes, "model_version": s_.model_version,
+                "llm_explanation": s_.llm_explanation,
+            }
+            for s_ in get_recent_signals(db, symbol, limit=25)
+        ],
     }
 
 
@@ -167,6 +191,7 @@ def system_page(db: Session = Depends(get_db)):
         "emergency_stop": emergency_stop_details() or {"active": False},
         "resource_usage": get_resource_usage(),
         "health": health.run_all_health_checks(db),
+        "drift_status": get_latest_drift_status(db),
     }
 
 

@@ -89,6 +89,27 @@ plausibly be worth trading after costs," not just statistical noise.
 hard-coded — see the comments in that file for the defaults and why they
 were chosen.
 
+## 5. Live collector (`crypto_ai/data/collector/live_collector.py`)
+
+**In:** a symbol/timeframe. **Out:** rows appended to `market_data` the
+moment each candle closes.
+
+The REST downloader above polls on a schedule and is the source of truth
+for history and gap-filling. The live collector is a WebSocket supplement
+that delivers a candle as soon as it closes, rather than up to one poll
+interval later.
+
+Two deliberate behaviours:
+
+- **Only closed candles are stored.** An in-progress candle's
+  high/low/close keep changing; storing one would poison every feature
+  computed from it.
+- **On reconnect it triggers a REST backfill.** A dropped WebSocket is
+  normal on a 24/7 system, and assuming the stream resumed cleanly would
+  leave a silent hole in the data.
+
+**Start it:** `python run.py collect-live`
+
 ## Retention
 
 Raw 1-minute data can get large fast. `settings.yaml`'s `data.retention`

@@ -57,14 +57,18 @@ def check_exchange(session: Session, client=None) -> HealthCheck:
     don't need real network access."""
     from crypto_ai.exchange.market_data import MarketDataClient, RetryPolicy
 
-    client = client or MarketDataClient()
     # A health check should fail fast — the multi-attempt exponential
-    # backoff in market_data.py is meant for a long-running download,
-    # not for "is the exchange up right now".
-    client.retry_policy = RetryPolicy(max_attempts=1)
+    # backoff in market_data.py is meant for a long-running download, not
+    # for "is the exchange up right now". Build a separate client rather
+    # than mutating the caller's object, which would silently disable
+    # retries for whatever else is using it.
+    probe = MarketDataClient(
+        source=client.source if client is not None else None,
+        retry_policy=RetryPolicy(max_attempts=1),
+    ) if client is not None else MarketDataClient(retry_policy=RetryPolicy(max_attempts=1))
     start = time.monotonic()
     try:
-        client.fetch_ohlcv_page(
+        probe.fetch_ohlcv_page(
             "BTC/USDT", "5m", dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=30), limit=1
         )
         latency_ms = (time.monotonic() - start) * 1000
