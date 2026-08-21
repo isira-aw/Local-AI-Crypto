@@ -82,6 +82,29 @@ The report's recommendation field is deliberately conservative — see
 `app/services/reporting.py` — and will say `CONTINUE RESEARCH` or
 `NOT READY FOR REAL TRADING` far more often than `CANDIDATE FOR TESTNET`.
 
+## The Month-1 report (Section 22)
+
+The daily report is a snapshot. For the longer view — "after a month of
+running, is there any evidence here?" — use:
+
+```bash
+python run.py research-report            # last 30 days (Month-1)
+python run.py research-report --days 7   # weekly
+```
+
+It reports the seven sections Section 22 asks for (model performance,
+strategy performance, paper-trading performance, risk metrics, model
+stability, data quality, recommendation) and produces one of exactly three
+recommendations: `CONTINUE RESEARCH`, `NOT READY FOR REAL TRADING`, or
+`CANDIDATE FOR TESTNET`.
+
+Reaching `CANDIDATE FOR TESTNET` requires **all** of: at least 100 paper
+trades and 200 evaluated predictions, positive net return, drawdown within
+limits, better-than-coin-flip directional accuracy, no too-good-to-be-true
+warnings, no error/critical events, clean data quality, and a stable
+champion. Positive profit on its own never gets you there — Section 22 is
+explicit about that.
+
 ## Next step
 
 Only after real, sustained evidence: `docs/REAL_TRADING.md`.
