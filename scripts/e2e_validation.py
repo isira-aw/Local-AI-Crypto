@@ -81,7 +81,12 @@ class SimulatedBinance:
         low = body_low * (1 - spread)
         volume = np.abs(rng.normal(50, 20, n_bars)) + 1
 
-        start = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+        # Anchor the series so it ENDS at (roughly) now. Dating synthetic
+        # data in the past means the retention policy — which correctly
+        # deletes 5m candles older than its configured window — wipes it
+        # mid-run, which is a property of the harness, not a product bug.
+        end = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+        start = end - dt.timedelta(minutes=timeframe_minutes * n_bars)
         self.rows = [
             {
                 "timestamp": start + dt.timedelta(minutes=timeframe_minutes * i),
