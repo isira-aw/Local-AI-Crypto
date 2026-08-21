@@ -1,0 +1,45 @@
+# Secrets
+.env
+*.key
+*.secret
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Data / models / logs (local state, not source)
+data_store/raw/*
+!data_store/raw/.gitkeep
+data_store/processed/*
+!data_store/processed/.gitkeep
+data_store/models/*
+!data_store/models/.gitkeep
+data_store/backups/*
+!data_store/backups/.gitkeep
+data_store/logs/*
+!data_store/logs/.gitkeep
+
+# Node / frontend (future dashboard)
+node_modules/
+dist/
+.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Docker
+docker/postgres-data/

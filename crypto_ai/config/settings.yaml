@@ -1,0 +1,130 @@
+# Main application configuration.
+#
+# This file holds settings that are safe to commit to git (no secrets).
+# Secrets and per-machine overrides (DB URL, API keys, mode) live in
+# ".env" — see .env.example. Values here are defaults; a small number
+# of them can be overridden by environment variables of the same name
+# (see crypto_ai/config/loader.py).
+
+exchange:
+  name: binance
+  symbol: BTC/USDT
+  market: spot
+
+system:
+  # RESEARCH | PAPER | TESTNET | LIVE — overridden by MODE env var.
+  mode: RESEARCH
+  timezone: UTC
+
+data:
+  # Timeframes to collect. 5m is the primary timeframe used for
+  # features/labels/training. The others are collected for context
+  # (e.g. multi-timeframe features later) and for the dashboard charts.
+  timeframes:
+    - 1m
+    - 5m
+    - 15m
+    - 1h
+    - 4h
+    - 1d
+  primary_timeframe: 5m
+  # How far back to backfill on first run. ~2 years of 5m bars gives
+  # enough history for several walk-forward folds without demanding
+  # more than a few hundred MB of disk on a typical laptop.
+  initial_history_days: 730
+  # 1-minute data is high volume; keep a shorter rolling window for it
+  # by default (see database retention policy in docs + monitoring/retention).
+  retention:
+    "1m": 180        # days
+    "5m": 730
+    "15m": 1460
+    "1h": null        # null = keep forever
+    "4h": null
+    "1d": null
+    logs: 30          # days
+    predictions: null # keep forever
+    trades: null      # keep forever (permanent unless manually deleted)
+
+features:
+  # Indicator lookback windows. These are defaults, not gospel —
+  # feature_pipeline.py documents why each one is included.
+  sma_windows: [10, 20, 50]
+  ema_windows: [10, 20, 50]
+  rsi_window: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  atr_window: 14
+  bollinger_window: 20
+  bollinger_std: 2.0
+  volatility_windows: [12, 48]     # in bars of the primary timeframe
+  momentum_windows: [3, 6, 12]
+
+labeling:
+  # Forward-looking horizon (in bars of the primary timeframe) used to
+  # compute future_return for labels.
+  horizon_bars: 12          # 12 * 5m = 1 hour ahead
+  # Thresholds are expressed net of an assumed round-trip cost
+  # (fees + slippage) so a label of BUY/SELL implies a move large
+  # enough to plausibly be worth trading, not just statistical noise.
+  positive_threshold: 0.005   # +0.5%
+  negative_threshold: -0.005  # -0.5%
+  assumed_fee_pct: 0.001      # 0.1% per side (Binance spot taker default)
+  assumed_slippage_pct: 0.0005
+
+walk_forward:
+  # Number of expanding-window folds used during training.
+  n_folds: 5
+  # Minimum bars in the first training window.
+  min_train_bars: 20000
+  # Bars in each validation window.
+  validation_bars: 4000
+  # Embargo gap (in bars) between train and validation — must be >=
+  # labeling.horizon_bars so no validation label overlaps training data.
+  embargo_bars: 12
+  # Bars held out at the very end as the final, never-touched test set.
+  final_test_bars: 4000
+
+models:
+  candidates:
+    - logistic_regression
+    - random_forest
+    - gradient_boosting
+  # Minimum bar for a model to become a *candidate* production model.
+  # These are evaluated on EVERY walk-forward fold, not just the final
+  # test set — see models/evaluation/criteria.py.
+  promotion_criteria:
+    min_folds_passed_pct: 0.8      # must pass on >=80% of folds
+    min_precision: 0.52             # only slightly better than coin-flip is fine;
+                                     # edge comes from many small correct bets
+    max_drawdown_pct: 0.20
+    min_sharpe: 0.3
+    min_trades_per_fold: 20
+  retrain_schedule_days: 7
+
+llm:
+  enabled: true
+  provider: ollama   # ollama | lmstudio
+  model: llama3.1:8b-instruct-q4_K_M
+  base_url: http://localhost:11434
+  timeout_seconds: 30
+
+risk:
+  config_file: risk.yaml
+
+paper_trading:
+  starting_balance_usdt: 1000.0
+
+scheduler:
+  collect_data_minutes: 5
+  feature_refresh_minutes: 5
+  prediction_interval_minutes: 5
+  daily_report_hour_utc: 0
+  weekly_retrain_day: sunday
+  weekly_retrain_hour_utc: 1
+  health_check_minutes: 1
+  drift_check_minutes: 60
+
+resource_limits:
+  max_workers: 2
+  batch_size: 256

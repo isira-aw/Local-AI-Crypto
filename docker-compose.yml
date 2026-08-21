@@ -1,0 +1,82 @@
+# Local AI Crypto — Docker Compose
+#
+# Beginner note: this starts the database (and later, the backend/
+# scheduler/frontend) as isolated containers on your machine. Nothing
+# is sent anywhere over the internet by Docker itself.
+#
+# All persistent state is bind-mounted to ./docker/*-data on the HOST
+# filesystem (not a Docker-managed volume) so you can back it up, copy
+# it to another machine, or recreate the containers without losing
+# data. See docs/POWER_FAILURE_RECOVERY.md.
+#
+# Usage:
+#   docker compose up -d postgres        # just the database
+#   docker compose up -d                 # database + backend + scheduler
+#   docker compose down                  # stop everything (data is kept)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crypto_ai_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crypto_ai
+      POSTGRES_PASSWORD: crypto_ai
+      POSTGRES_DB: crypto_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crypto_ai -d crypto_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: crypto_ai_backend
+    restart: unless-stopped
+    command: ["python", "run.py", "start", "--api-only"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://crypto_ai:crypto_ai@postgres:5432/crypto_ai
+      # If you run Ollama/LM Studio on the HOST (not in Docker), this
+      # lets the container reach it on Windows/Mac. On Linux, set
+      # LLM_BASE_URL to your host IP or run Ollama with
+      # OLLAMA_HOST=0.0.0.0 and use the docker0 bridge IP instead.
+      LLM_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data_store:/app/data_store
+      - ./crypto_ai/config:/app/crypto_ai/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: crypto_ai_scheduler
+    restart: unless-stopped
+    command: ["python", "run.py", "scheduler"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://crypto_ai:crypto_ai@postgres:5432/crypto_ai
+      LLM_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data_store:/app/data_store
+      - ./crypto_ai/config:/app/crypto_ai/config
+    depends_on:
+      postgres:
+        condition: service_healthy

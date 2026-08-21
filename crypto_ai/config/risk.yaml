@@ -1,0 +1,55 @@
+# Risk management configuration.
+#
+# These limits are enforced by risk/manager.py before ANY simulated or
+# real order is placed. They apply identically in PAPER, TESTNET and
+# LIVE modes so that paper-trading results are a fair preview of how
+# the risk engine will behave later.
+
+position_sizing:
+  # Never risk more than this fraction of portfolio equity on a single
+  # position.
+  max_position_percent: 5.0
+  # Position size is also scaled down by the model's confidence and by
+  # current volatility — see risk/position_sizing.py.
+  min_confidence_to_trade: 0.55
+
+loss_limits:
+  max_daily_loss_percent: 2.0
+  max_total_drawdown_percent: 20.0
+  # After this many consecutive losing trades, pause new entries for
+  # `cooldown_minutes`.
+  consecutive_loss_limit: 3
+  cooldown_minutes: 120
+
+exposure:
+  max_open_positions: 1
+  max_exposure_percent: 5.0
+
+orders:
+  stop_loss_percent: 2.0
+  take_profit_percent: 4.0
+  max_trades_per_day: 20
+
+safety:
+  # Hard global switch. Real order placement checks this AND the
+  # REAL_TRADING_ENABLED env var AND the full checklist in
+  # docs/REAL_TRADING.md before doing anything.
+  trading_enabled: false
+  emergency_stop: false
+  # If the system cannot verify exchange/account state (e.g. after a
+  # restart or network interruption), it must not open new positions
+  # until state is reconciled.
+  require_state_sync_before_trading: true
+
+live_trading_gate:
+  # All of these must be true (see risk/safety_rules.py) before
+  # REAL_TRADING_ENABLED can be honored, regardless of what is written
+  # in .env.
+  min_paper_trading_days: 30
+  min_paper_trades: 100
+  min_paper_net_return_percent: 0.0
+  max_paper_drawdown_percent: 20.0
+  require_walk_forward_pass: true
+  require_no_critical_errors_days: 14
+  require_regulatory_check_ack: true
+  max_live_capital_usdt: 50.0
