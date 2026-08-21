@@ -221,6 +221,19 @@ def collect_live(
     run_collector(symbol, timeframe)
 
 
+@app.command("research-report")
+def research_report_cmd(
+    days: int = typer.Option(30, help="Reporting window in days (7 = weekly, 30 = Month-1)"),
+):
+    """Weekly / Month-1 research report with a conservative recommendation (Section 22)."""
+    from crypto_ai.app.services.research_report import format_research_report, generate_research_report
+    from crypto_ai.database.base import session_scope
+
+    with session_scope() as session:
+        report = generate_research_report(session, days=days)
+    console.print(format_research_report(report))
+
+
 @app.command()
 def backup():
     """Create a backup archive of the database, config and trained models (Section 33)."""
@@ -402,8 +415,17 @@ def backtest(
         merged["close"] = df.set_index("timestamp").loc[features["timestamp"], "close"].values
         merged["signal"] = signals.values
 
+        # Use the SAME position sizing and stop/target the risk engine would
+        # enforce live — otherwise this report describes a strategy the
+        # system is not actually allowed to run (see docs/BACKTESTING.md).
+        from crypto_ai.config.loader import get_risk_config
+
+        risk_cfg = get_risk_config()
         engine = BacktestEngine(
             initial_balance=settings.get("paper_trading.starting_balance_usdt", 1000.0), timeframe=timeframe,
+            position_size_pct=risk_cfg.get("position_sizing", {}).get("max_position_percent", 5.0) / 100.0,
+            stop_loss_pct=(risk_cfg.get("orders", {}).get("stop_loss_percent") or 0) / 100 or None,
+            take_profit_pct=(risk_cfg.get("orders", {}).get("take_profit_percent") or 0) / 100 or None,
         )
         report = engine.run(merged, symbol=symbol)
         save_backtest_run(

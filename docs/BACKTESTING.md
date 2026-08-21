@@ -22,6 +22,13 @@ and a metrics dict.
 **Start it:** `python run.py backtest` (runs the current champion model
 against recent history).
 
+The backtest uses the **same position sizing and stop/take-profit levels
+the risk engine enforces live** (from `risk.yaml`, default 5% of equity per
+position). This matters: an earlier version backtested at 100% of equity,
+which produced returns roughly 20x larger than the system would ever
+actually be permitted to take. If you compare against numbers from
+elsewhere, check what position size they assumed.
+
 ## How does it work?
 
 Spot-only, single position at a time, no leverage or shorting (Section 5).

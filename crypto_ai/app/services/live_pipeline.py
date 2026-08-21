@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 MIN_BARS_FOR_FEATURES = 250  # comfortably more than the longest indicator window
 
+# How much history a single live tick loads. Only the LAST row's features
+# are used, so loading the whole table (which grows without bound) on every
+# tick is wasted work — this window is generous enough to warm up every
+# indicator while keeping each tick's cost constant as history accumulates.
+LIVE_INFERENCE_WINDOW_BARS = 1000
+
 
 def get_current_risk_state(session: Session, mode: str = "PAPER", now: dt.datetime | None = None) -> RiskState:
     now = as_utc(now) or utc_now()
@@ -108,7 +114,7 @@ def run_prediction_and_paper_trade_tick(
     symbol = symbol or settings.get("exchange.symbol", "BTC/USDT")
     timeframe = timeframe or settings.get("data.primary_timeframe", "5m")
 
-    df = load_candles_df(session, symbol, timeframe)
+    df = load_candles_df(session, symbol, timeframe, limit=LIVE_INFERENCE_WINDOW_BARS)
     if len(df) < MIN_BARS_FOR_FEATURES:
         return {"status": "insufficient_data", "bars_available": len(df), "bars_needed": MIN_BARS_FOR_FEATURES}
 

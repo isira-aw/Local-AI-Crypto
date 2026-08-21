@@ -344,8 +344,13 @@ def main() -> int:
         statuses = {}
         actions = {}
         with session_scope() as s:
+            # Trim back to the first 55k bars so the loop below can feed the
+            # rest in one at a time. Compare on a naive value: SQLite stores
+            # these columns without tzinfo, and binding a tz-aware datetime
+            # makes the comparison ambiguous.
             from crypto_ai.database.models.market import MarketData
-            s.query(MarketData).filter(MarketData.timestamp > sim.rows[55000]["timestamp"]).delete()
+            cutoff = sim.rows[55000]["timestamp"].replace(tzinfo=None)
+            s.query(MarketData).filter(MarketData.timestamp > cutoff).delete()
         for i in range(55000, 55500):
             with session_scope() as s:
                 upsert_candles(s, SYMBOL, TIMEFRAME, [dict(sim.rows[i])])
@@ -397,7 +402,7 @@ def main() -> int:
             acc = summarize_prediction_accuracy(s, symbol=SYMBOL)
         print(f"    predictions={total} evaluated_now={n_eval} accuracy={acc['accuracy_pct']}% "
               f"directional={acc['directional_accuracy_pct']}%")
-        assert total > 400, f"expected many predictions, got {total}"
+        assert total >= 450, f"expected ~500 predictions from 500 ticks, got {total}"
         assert n_eval > 0, "no predictions became due — evaluator may be broken"
         assert acc["n_predictions"] > 0
 
@@ -460,6 +465,7 @@ def main() -> int:
                 assert r.json() is not None
             ov = c.get("/api/overview").json()
             assert ov["current_price"] is not None, "overview shows no price despite data present"
+            assert ov["current_signal"] is not None, "overview shows no signal despite ticks having run"
             bt = c.get("/api/backtests").json()
             assert len(bt) == 1, f"backtests endpoint returned {len(bt)}"
         print("    all 7 endpoints OK with populated data")

@@ -34,7 +34,22 @@ from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = Path(__file__).resolve().parent
-DATA_STORE_DIR = PROJECT_ROOT / "data_store"
+
+
+def _resolve_data_store_dir() -> Path:
+    """
+    Where models, backups, logs and reports live.
+
+    Overridable via the DATA_STORE_DIR environment variable so the location
+    can be moved (a bigger disk, a mounted volume) and so the test suite can
+    redirect it to a throwaway directory instead of writing into — and
+    potentially corrupting — the user's real data.
+    """
+    override = os.getenv("DATA_STORE_DIR")
+    return Path(override).expanduser().resolve() if override else PROJECT_ROOT / "data_store"
+
+
+DATA_STORE_DIR = _resolve_data_store_dir()
 
 VALID_MODES = ("RESEARCH", "PAPER", "TESTNET", "LIVE")
 
@@ -115,7 +130,7 @@ class Settings(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     resource_limits: ResourceLimits = Field(default_factory=ResourceLimits)
     project_root: Path = PROJECT_ROOT
-    data_store_dir: Path = DATA_STORE_DIR
+    data_store_dir: Path = Field(default_factory=_resolve_data_store_dir)
 
     model_config = {"arbitrary_types_allowed": True}
 

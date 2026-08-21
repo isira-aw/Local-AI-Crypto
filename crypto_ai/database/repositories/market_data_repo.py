@@ -77,15 +77,29 @@ def load_candles_df(
     timeframe: str,
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
+    limit: int | None = None,
 ) -> pd.DataFrame:
+    """
+    `limit` returns only the most recent N bars (still in ascending order).
+    Live inference only needs enough history to warm up the indicators, so
+    loading the entire table on every tick is pure waste that grows without
+    bound as history accumulates.
+    """
     stmt = select(MarketData).where(MarketData.symbol == symbol, MarketData.timeframe == timeframe)
     if start is not None:
         stmt = stmt.where(MarketData.timestamp >= start)
     if end is not None:
         stmt = stmt.where(MarketData.timestamp <= end)
-    stmt = stmt.order_by(MarketData.timestamp.asc())
+    if limit is not None:
+        # Take the newest `limit` rows at the database level, then restore
+        # ascending order in pandas — indicators require chronological order.
+        stmt = stmt.order_by(MarketData.timestamp.desc()).limit(limit)
+    else:
+        stmt = stmt.order_by(MarketData.timestamp.asc())
 
     rows = session.execute(stmt).scalars().all()
+    if limit is not None:
+        rows = list(reversed(rows))
     if not rows:
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
 

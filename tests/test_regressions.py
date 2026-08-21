@@ -351,3 +351,122 @@ def test_unknown_algorithm_raises_with_helpful_message():
 
     with pytest.raises(ValueError, match="Unknown algorithm"):
         build_model("deep_neural_magic")
+
+
+# ---------------------------------------------------------------------
+# Live tick must not load the entire table on every invocation
+# ---------------------------------------------------------------------
+def test_load_candles_df_limit_returns_most_recent_in_ascending_order(db_session):
+    from crypto_ai.database.repositories.market_data_repo import load_candles_df, upsert_candles
+
+    rows = [
+        {"timestamp": START + dt.timedelta(minutes=5 * i), "open": 1.0, "high": 1.0,
+         "low": 1.0, "close": float(i), "volume": 1.0}
+        for i in range(100)
+    ]
+    upsert_candles(db_session, "BTC/USDT", "5m", rows)
+    db_session.commit()
+
+    df = load_candles_df(db_session, "BTC/USDT", "5m", limit=10)
+    assert len(df) == 10
+    # Most recent ten (closes 90..99), still chronological.
+    assert df["close"].iloc[0] == 90.0
+    assert df["close"].iloc[-1] == 99.0
+    assert df["timestamp"].is_monotonic_increasing
+
+
+def test_load_candles_df_without_limit_returns_everything(db_session):
+    from crypto_ai.database.repositories.market_data_repo import load_candles_df, upsert_candles
+
+    rows = [
+        {"timestamp": START + dt.timedelta(minutes=5 * i), "open": 1.0, "high": 1.0,
+         "low": 1.0, "close": float(i), "volume": 1.0}
+        for i in range(30)
+    ]
+    upsert_candles(db_session, "BTC/USDT", "5m", rows)
+    db_session.commit()
+    assert len(load_candles_df(db_session, "BTC/USDT", "5m")) == 30
+
+
+def test_live_tick_loads_only_a_bounded_window(db_session, monkeypatch):
+    """
+    The tick only uses the last row's features, so its cost must stay
+    constant as history grows rather than scaling with the whole table.
+    """
+    from crypto_ai.app.services import live_pipeline as lp
+    from crypto_ai.database.repositories.market_data_repo import upsert_candles
+
+    rows = [
+        {"timestamp": START + dt.timedelta(minutes=5 * i), "open": 100.0, "high": 101.0,
+         "low": 99.0, "close": 100.0, "volume": 1.0}
+        for i in range(3000)
+    ]
+    upsert_candles(db_session, "BTC/USDT", "5m", rows)
+    db_session.commit()
+
+    seen = {}
+    real_loader = lp.load_candles_df
+
+    def spy(session, symbol, timeframe, **kwargs):
+        seen["limit"] = kwargs.get("limit")
+        df = real_loader(session, symbol, timeframe, **kwargs)
+        seen["n_rows"] = len(df)
+        return df
+
+    monkeypatch.setattr(lp, "load_candles_df", spy)
+    lp.run_prediction_and_paper_trade_tick(db_session, "BTC/USDT", "5m")
+
+    assert seen["limit"] == lp.LIVE_INFERENCE_WINDOW_BARS
+    assert seen["n_rows"] <= lp.LIVE_INFERENCE_WINDOW_BARS, (
+        f"tick loaded {seen['n_rows']} rows from a 3000-row table"
+    )
+
+
+# ---------------------------------------------------------------------
+# Test isolation: the suite must never write into the real data_store
+# ---------------------------------------------------------------------
+def test_data_store_is_redirected_away_from_the_repo(test_data_store):
+    """
+    Tests register real model artifacts and write backups. If those land in
+    the repo's data_store/, running the suite can overwrite (and corrupt) a
+    user's live champion model — which is exactly what happened before this
+    was fixed.
+    """
+    from pathlib import Path
+
+    from crypto_ai.config.loader import PROJECT_ROOT, get_settings
+
+    active = get_settings().data_store_dir
+    assert active == test_data_store
+    assert PROJECT_ROOT not in Path(active).parents, (
+        f"tests are writing into the project directory: {active}"
+    )
+
+
+def test_data_store_dir_env_override_is_honoured(monkeypatch, tmp_path):
+    from crypto_ai.config import loader
+
+    monkeypatch.setenv("DATA_STORE_DIR", str(tmp_path / "custom"))
+    loader.reload_config()
+    assert loader.get_settings().data_store_dir == (tmp_path / "custom").resolve()
+
+
+def test_model_registry_writes_into_the_configured_data_store(db_session, test_data_store):
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    from crypto_ai.models.registry import registry
+
+    model = Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression())])
+    model.fit(np.random.rand(10, 3), ["BUY"] * 5 + ["SELL"] * 5)
+
+    version = registry.register_model_version(
+        db_session, "isolation_probe", "BTC/USDT", "5m", "logistic_regression",
+        feature_version="v1", strategy_version="s1", estimator=model,
+        hyperparameters={}, metrics={}, walk_forward_results={},
+    )
+    db_session.commit()
+
+    assert str(test_data_store) in version.artifact_path
