@@ -100,6 +100,14 @@ def predict_and_paper_trade_job() -> None:
             logger.info("predict_and_paper_trade tick skipped: %s", result["status"])
 
 
+@guarded("apply_retention_policy")
+def apply_retention_policy_job() -> None:
+    from crypto_ai.data.processor.retention import apply_retention_policy
+
+    with session_scope() as session:
+        apply_retention_policy(session)
+
+
 @guarded("daily_report")
 def daily_report_job() -> None:
     from crypto_ai.app.services.reporting import generate_daily_report
@@ -140,6 +148,10 @@ def build_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         daily_report_job, "cron", hour=cfg.get("daily_report_hour_utc", 0), minute=0, id="daily_report", replace_existing=True,
+    )
+    scheduler.add_job(
+        apply_retention_policy_job, "cron", hour=cfg.get("daily_report_hour_utc", 0), minute=15,
+        id="apply_retention_policy", replace_existing=True,
     )
     weekday_map = {"monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu", "friday": "fri", "saturday": "sat", "sunday": "sun"}
     scheduler.add_job(
