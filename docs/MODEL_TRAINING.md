@@ -33,7 +33,7 @@ complexity:
 
 - Logistic Regression
 - Random Forest
-- Gradient Boosting
+- Gradient Boosting (histogram-based — see "Training time" below)
 
 Neural networks are deliberately **not** the default. Section 8 of the
 design document is explicit: a complex model is only worth using if it
@@ -112,6 +112,35 @@ held-out test Sharpe ratio — never automatically on accuracy alone, and
 never without a comparison against what's already running
 (`maybe_promote_champion()` in `pipeline.py`). Rollback to the previous
 champion is possible via `models/registry/registry.py:rollback_to_previous_champion`.
+
+## Training time and the data window
+
+Walk-forward training does 6 fits per algorithm (5 folds + 1 final model),
+so per-fit cost matters a lot. Measured on this project's own data shape
+(20k rows x 30 features, 4-core CPU):
+
+| Estimator | Per fit | 6 fits |
+|---|---|---|
+| Logistic Regression | 0.1s | negligible |
+| Random Forest (200 trees, depth 6) | 6.3s | ~40s |
+| `GradientBoostingClassifier` (exact) | 84.4s | ~8.4 min |
+| `HistGradientBoostingClassifier` | 18.4s | ~1.8 min |
+
+`gradient_boosting` therefore uses the **histogram-based** implementation,
+which is what sklearn itself recommends above ~10,000 samples. The exact
+one is still selectable as `gradient_boosting_exact`.
+
+Two knobs control how long a run takes (Section 53):
+
+- `resource_limits.max_training_bars` (**DATA_WINDOW**, default 60000) —
+  caps how much history one run uses, keeping the **most recent** bars.
+  The full 2-year 5m history is ~210k bars, which takes hours; 60k bars is
+  ~7 months and still supports all 5 walk-forward folds. Set to `null` to
+  use everything.
+- `resource_limits.max_workers` — parallelism for Random Forest.
+
+Don't run training and the local LLM at full load at the same time on a
+modest machine; they compete for the same CPU and RAM.
 
 ## Multiple-testing correction
 

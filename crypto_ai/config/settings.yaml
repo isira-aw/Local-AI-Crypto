@@ -136,3 +136,9 @@ scheduler:
 resource_limits:
   max_workers: 2
   batch_size: 256
+  # DATA_WINDOW (Section 53): the maximum number of bars a single training
+  # run will use, taking the most recent ones. Training on the full 2-year
+  # 5m history (~210k bars) takes hours on a CPU-only laptop; 60k bars
+  # (~7 months of 5m candles) still supports the full 5 walk-forward folds
+  # while keeping a run to tens of minutes. Set to null to use everything.
+  max_training_bars: 60000

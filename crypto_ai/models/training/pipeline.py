@@ -292,10 +292,27 @@ def run_training_pipeline(
     walk_forward_cfg: dict | None = None,
     labeling_cfg: dict | None = None,
     promotion_criteria: dict | None = None,
+    max_training_bars: int | None = None,
 ) -> dict:
     settings = get_settings()
     algorithms = algorithms or settings.get("models.candidates", list(CANDIDATE_ALGORITHMS))
     merged = merge_features_and_labels(feature_df, label_df)
+
+    # DATA_WINDOW (Section 53): cap how much history a single training run
+    # uses. Without this, training on the default 2 years of 5m candles
+    # (~210k bars) takes hours on a normal CPU-only laptop, which makes
+    # iteration painful and the weekly retrain job unreliable. Keeping the
+    # MOST RECENT window is also usually the right call for a market that
+    # changes regime — older data can be less representative.
+    max_bars = max_training_bars if max_training_bars is not None else settings.get(
+        "resource_limits.max_training_bars"
+    )
+    if max_bars and len(merged) > max_bars:
+        logger.info(
+            "Limiting training to the most recent %s of %s bars (resource_limits.max_training_bars).",
+            max_bars, len(merged),
+        )
+        merged = merged.iloc[-max_bars:].reset_index(drop=True)
 
     results = []
     for algo in algorithms:

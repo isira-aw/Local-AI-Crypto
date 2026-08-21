@@ -235,3 +235,119 @@ def test_live_collector_stream_name():
     assert stream_name("BTC/USDT", "5m") == "btcusdt@kline_5m"
     with pytest.raises(ValueError):
         stream_name("BTC/USDT", "7m")
+
+
+# ---------------------------------------------------------------------
+# DATA_WINDOW (Section 53): cap training history so a run stays tractable
+# ---------------------------------------------------------------------
+def test_max_training_bars_limits_history_used(db_session, monkeypatch):
+    """
+    Section 53 lists DATA_WINDOW as a required configurable. Without it,
+    training on 2 years of 5m candles takes hours on a CPU-only laptop.
+    """
+    import numpy as np
+    from crypto_ai.models.training import pipeline as pipeline_mod
+
+    n = 3000
+    rng = np.random.default_rng(0)
+    ts = [START + dt.timedelta(minutes=5 * i) for i in range(n)]
+    features = pd.DataFrame({"timestamp": ts, "f1": rng.normal(size=n), "f2": rng.normal(size=n)})
+    labels = pd.DataFrame({
+        "timestamp": ts, "close": np.linspace(100, 200, n),
+        "label": ["BUY", "HOLD", "SELL"] * (n // 3),
+    })
+
+    captured = {}
+
+    def fake_train(session, algorithm, merged, *args, **kwargs):
+        captured["n_rows"] = len(merged)
+        captured["last_ts"] = merged["timestamp"].iloc[-1]
+        return {"algorithm": algorithm, "overall_pass": False, "version_label": "model_001"}
+
+    monkeypatch.setattr(pipeline_mod, "train_and_evaluate_algorithm", fake_train)
+
+    pipeline_mod.run_training_pipeline(
+        db_session, "BTC/USDT", "5m", features, labels,
+        model_name="window_test", algorithms=["logistic_regression"],
+        max_training_bars=500,
+    )
+
+    assert captured["n_rows"] == 500, f"expected the window to cap at 500 bars, got {captured['n_rows']}"
+    # It must keep the MOST RECENT bars, not the oldest.
+    assert captured["last_ts"] == ts[-1]
+
+
+def test_max_training_bars_none_uses_everything(db_session, monkeypatch):
+    import numpy as np
+    from crypto_ai.models.training import pipeline as pipeline_mod
+
+    n = 300
+    ts = [START + dt.timedelta(minutes=5 * i) for i in range(n)]
+    features = pd.DataFrame({"timestamp": ts, "f1": np.arange(n, dtype=float)})
+    labels = pd.DataFrame({
+        "timestamp": ts, "close": np.linspace(100, 200, n), "label": ["BUY", "HOLD", "SELL"] * (n // 3),
+    })
+
+    captured = {}
+
+    def fake_train(session, algorithm, merged, *args, **kwargs):
+        captured["n_rows"] = len(merged)
+        return {"algorithm": algorithm, "overall_pass": False, "version_label": "model_001"}
+
+    monkeypatch.setattr(pipeline_mod, "train_and_evaluate_algorithm", fake_train)
+    monkeypatch.setattr(
+        pipeline_mod.get_settings(), "raw",
+        {**pipeline_mod.get_settings().raw, "resource_limits": {"max_training_bars": None}},
+    )
+
+    pipeline_mod.run_training_pipeline(
+        db_session, "BTC/USDT", "5m", features, labels,
+        model_name="window_test2", algorithms=["logistic_regression"],
+    )
+    assert captured["n_rows"] == n
+
+
+# ---------------------------------------------------------------------
+# Training performance: gradient_boosting must use the histogram-based
+# implementation (the exact one made a full run take over an hour).
+# ---------------------------------------------------------------------
+def test_gradient_boosting_uses_histogram_implementation():
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    from crypto_ai.models.training.models import build_model
+
+    model = build_model("gradient_boosting")
+    assert isinstance(model.named_steps["clf"], HistGradientBoostingClassifier)
+
+
+def test_exact_gradient_boosting_still_available():
+    from sklearn.ensemble import GradientBoostingClassifier
+
+    from crypto_ai.models.training.models import build_model
+
+    model = build_model("gradient_boosting_exact")
+    assert isinstance(model.named_steps["clf"], GradientBoostingClassifier)
+
+
+def test_all_candidate_algorithms_build_and_accept_sample_weight():
+    import numpy as np
+
+    from crypto_ai.models.training.models import CANDIDATE_ALGORITHMS, build_model
+
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.normal(size=(120, 4)), columns=list("abcd"))
+    y = pd.Series(["BUY", "HOLD", "SELL"] * 40)
+    weights = np.ones(len(y))
+
+    for algo in CANDIDATE_ALGORITHMS:
+        model = build_model(algo)
+        model.fit(X, y, clf__sample_weight=weights)
+        proba = model.predict_proba(X)
+        assert proba.shape == (120, 3)
+
+
+def test_unknown_algorithm_raises_with_helpful_message():
+    from crypto_ai.models.training.models import build_model
+
+    with pytest.raises(ValueError, match="Unknown algorithm"):
+        build_model("deep_neural_magic")
