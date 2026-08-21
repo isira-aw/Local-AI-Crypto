@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local AI Crypto — Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #262a37; --text: #e6e8ef;
+    --muted: #9aa1b4; --green: #3ecf8e; --red: #ef5a5a; --amber: #e8b339; --accent: #5b8def;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  header h1 { font-size: 18px; margin: 0; }
+  .mode-badge { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
+  nav { display: flex; gap: 4px; padding: 8px 24px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { background: none; border: none; color: var(--muted); padding: 8px 14px; cursor: pointer; border-radius: 6px; font-size: 14px; }
+  nav button.active { background: var(--panel); color: var(--text); }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 22px; font-weight: 600; }
+  .value.green { color: var(--green); } .value.red { color: var(--red); } .value.amber { color: var(--amber); }
+  .banner { background: #2a2210; border: 1px solid var(--amber); color: var(--amber); padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill.ok { background: rgba(62,207,142,0.15); color: var(--green); }
+  .pill.down { background: rgba(239,90,90,0.15); color: var(--red); }
+  .pill.degraded { background: rgba(232,179,57,0.15); color: var(--amber); }
+  section { display: none; }
+  section.active { display: block; }
+  .stop-btn { background: var(--red); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  .reset-btn { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+  .muted { color: var(--muted); font-size: 12px; }
+  pre { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Local AI Crypto</h1>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <span id="mode-badge" class="mode-badge">RESEARCH</span>
+    <button id="emergency-btn" class="stop-btn">Emergency Stop</button>
+  </div>
+</header>
+<nav>
+  <button data-page="overview" class="active">Overview</button>
+  <button data-page="market">Market</button>
+  <button data-page="ai">AI</button>
+  <button data-page="backtesting">Backtesting</button>
+  <button data-page="paper">Paper Trading</button>
+  <button data-page="system">System</button>
+</nav>
+<main>
+  <div class="banner">⚠️ Experimental research system. Past performance does not guarantee future results. Not financial advice.</div>
+
+  <section id="page-overview" class="active">
+    <div class="grid" id="overview-grid"></div>
+  </section>
+
+  <section id="page-market">
+    <div class="card"><div class="label">Latest candles (most recent last)</div>
+      <table><thead><tr><th>Time</th><th>Close</th><th>Volume</th></tr></thead><tbody id="market-table"></tbody></table>
+    </div>
+  </section>
+
+  <section id="page-ai">
+    <div class="grid" id="ai-grid"></div>
+  </section>
+
+  <section id="page-backtesting">
+    <div class="card"><div class="label">Recent backtests</div>
+      <table><thead><tr><th>Strategy</th><th>Model</th><th>Return %</th><th>Drawdown %</th><th>Sharpe</th><th>Trades</th></tr></thead><tbody id="backtest-table"></tbody></table>
+    </div>
+  </section>
+
+  <section id="page-paper">
+    <div class="grid" id="paper-grid"></div>
+    <div class="card"><div class="label">Recent trades</div>
+      <table><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>P/L</th><th>Reason</th></tr></thead><tbody id="trades-table"></tbody></table>
+    </div>
+  </section>
+
+  <section id="page-system">
+    <div class="grid" id="system-grid"></div>
+    <pre id="system-raw"></pre>
+  </section>
+</main>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(n)) ? "n/a" : Number(n).toFixed(d);
+const colorFor = (n) => n > 0 ? "green" : n < 0 ? "red" : "";
+
+async function getJSON(url, opts) {
+  const r = await fetch(url, opts);
+  return r.json();
+}
+
+function card(label, value, cls="") {
+  return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+}
+
+async function renderOverview() {
+  const d = await getJSON("/api/overview");
+  $("#mode-badge").textContent = d.mode;
+  const pos = d.current_position ? `${fmt(d.current_position.quantity, 6)} @ ${fmt(d.current_position.entry_price)}` : "None (flat)";
+  const s = d.paper_trading_summary || {};
+  $("#overview-grid").innerHTML = [
+    card("Current price", d.current_price !== null ? "$" + fmt(d.current_price) : "n/a"),
+    card("Mode", d.mode),
+    card("Paper balance (cash)", "$" + fmt(d.paper_balance)),
+    card("Current position", pos),
+    card("Total return", fmt(s.total_return_pct) + "%", colorFor(s.total_return_pct || 0)),
+    card("Max drawdown", fmt(s.max_drawdown_pct) + "%"),
+    card("Champion model", d.champion_model || "None trained yet"),
+    card("Trading enabled", d.trading_enabled ? "Yes" : "No (safe default)"),
+    card("Emergency stop", d.emergency_stop ? "ACTIVE" : "Off", d.emergency_stop ? "red" : "green"),
+  ].join("");
+}
+
+async function renderMarket() {
+  const d = await getJSON("/api/market?limit=100");
+  $("#market-table").innerHTML = d.candles.slice(-30).map(c =>
+    `<tr><td>${new Date(c.timestamp).toLocaleString()}</td><td>${fmt(c.close)}</td><td>${fmt(c.volume)}</td></tr>`
+  ).join("") || `<tr><td colspan="3" class="muted">No market data yet — run: python run.py download-data</td></tr>`;
+}
+
+async function renderAI() {
+  const d = await getJSON("/api/ai");
+  const acc = d.prediction_accuracy || {};
+  $("#ai-grid").innerHTML = [
+    card("Champion model", d.champion_model || "None yet"),
+    card("Prediction accuracy", acc.accuracy_pct !== null && acc.accuracy_pct !== undefined ? fmt(acc.accuracy_pct) + "%" : "n/a"),
+    card("Directional accuracy", acc.directional_accuracy_pct !== null && acc.directional_accuracy_pct !== undefined ? fmt(acc.directional_accuracy_pct) + "%" : "n/a"),
+    card("Evaluated predictions", acc.n_predictions ?? 0),
+    card("Local LLM", `<span class="pill ${(d.llm_status?.status||'').toLowerCase()==='ok'?'ok':(d.llm_status?.status==='DOWN'?'down':'degraded')}">${d.llm_status?.status || 'n/a'}</span>`),
+  ].join("");
+}
+
+async function renderBacktesting() {
+  const rows = await getJSON("/api/backtests");
+  $("#backtest-table").innerHTML = rows.map(r => `<tr>
+    <td>${r.strategy_version}</td><td>${r.model_version || 'n/a'}</td>
+    <td class="${colorFor(r.metrics.total_return_pct||0)}">${fmt(r.metrics.total_return_pct)}</td>
+    <td>${fmt(r.metrics.max_drawdown_pct)}</td><td>${fmt(r.metrics.sharpe_ratio)}</td><td>${r.metrics.n_trades}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="muted">No backtests yet — run: python run.py backtest</td></tr>`;
+}
+
+async function renderPaper() {
+  const d = await getJSON("/api/paper-trading");
+  const s = d.summary || {};
+  $("#paper-grid").innerHTML = [
+    card("Starting balance", s.starting_balance !== null && s.starting_balance !== undefined ? "$" + fmt(s.starting_balance) : "n/a"),
+    card("Current equity", s.current_equity !== null && s.current_equity !== undefined ? "$" + fmt(s.current_equity) : "n/a"),
+    card("Total return", fmt(s.total_return_pct) + "%", colorFor(s.total_return_pct || 0)),
+    card("Win rate", fmt(s.win_rate_pct) + "%"),
+    card("Trades", s.n_trades ?? 0),
+    card("Profit factor", fmt(s.profit_factor)),
+  ].join("");
+  $("#trades-table").innerHTML = (d.recent_trades || []).map(t => `<tr>
+    <td>${t.side}</td><td>${fmt(t.entry_price)}</td><td>${t.exit_price ? fmt(t.exit_price) : 'open'}</td>
+    <td class="${colorFor(t.pnl||0)}">${t.pnl !== null ? fmt(t.pnl) : ''}</td><td>${t.reason||''}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="muted">No paper trades yet.</td></tr>`;
+}
+
+function pill(status) {
+  const cls = status === "OK" ? "ok" : status === "DOWN" ? "down" : "degraded";
+  return `<span class="pill ${cls}">${status}</span>`;
+}
+
+async function renderSystem() {
+  const d = await getJSON("/api/system");
+  const h = d.health || {};
+  const r = d.resource_usage || {};
+  $("#system-grid").innerHTML = [
+    card("Mode", d.mode),
+    card("Database", pill(h.database?.status || "n/a")),
+    card("Exchange", pill(h.exchange?.status || "n/a")),
+    card("LLM", pill(h.llm?.status || "n/a")),
+    card("CPU usage", fmt(r.cpu_percent, 0) + "%"),
+    card("RAM usage", fmt(r.ram_percent, 0) + "%"),
+    card("Disk free", fmt(r.disk_free_gb, 1) + " GB"),
+    card("Emergency stop", d.emergency_stop?.active ? "ACTIVE" : "Off", d.emergency_stop?.active ? "red" : "green"),
+  ].join("");
+  $("#system-raw").textContent = JSON.stringify(d, null, 2);
+}
+
+const renderers = { overview: renderOverview, market: renderMarket, ai: renderAI, backtesting: renderBacktesting, paper: renderPaper, system: renderSystem };
+
+function showPage(name) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.page === name));
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === "page-" + name));
+  renderers[name]();
+}
+
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showPage(b.dataset.page)));
+
+$("#emergency-btn").addEventListener("click", async () => {
+  const active = $("#emergency-btn").dataset.active === "true";
+  if (active) {
+    if (!confirm("Reset emergency stop and allow trading signals to be evaluated again?")) return;
+    await getJSON("/api/emergency-stop/reset", { method: "POST" });
+  } else {
+    if (!confirm("Activate EMERGENCY STOP? This blocks all new BUY signals until manually reset.")) return;
+    await getJSON("/api/emergency-stop/activate?reason=" + encodeURIComponent("Dashboard button"), { method: "POST" });
+  }
+  refreshEmergencyButton();
+  renderOverview();
+});
+
+async function refreshEmergencyButton() {
+  const d = await getJSON("/api/system");
+  const active = !!d.emergency_stop?.active;
+  const btn = $("#emergency-btn");
+  btn.dataset.active = active;
+  btn.textContent = active ? "Reset Emergency Stop" : "Emergency Stop";
+  btn.className = active ? "reset-btn" : "stop-btn";
+}
+
+showPage("overview");
+refreshEmergencyButton();
+setInterval(() => { showPage(document.querySelector("nav button.active").dataset.page); refreshEmergencyButton(); }, 15000);
+</script>
+</body>
+</html>

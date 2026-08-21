@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from crypto_ai.config.loader import get_risk_config, get_settings
+from crypto_ai.risk.emergency import is_emergency_stop_active
 from crypto_ai.risk.position_sizing import calculate_position_size_pct
 
 
@@ -96,7 +97,7 @@ class RiskManager:
         signal = proposed_signal
 
         # --- Hard stops: checked first and override everything else. ---
-        if self.cfg.get("safety", {}).get("emergency_stop", False) or settings.safety.emergency_stop:
+        if self.cfg.get("safety", {}).get("emergency_stop", False) or is_emergency_stop_active():
             return RiskDecision("WAIT", 0.0, 1.0, ["emergency_stop_active"], blocked=True)
 
         if signal == "BUY":
