@@ -90,6 +90,16 @@ def evaluate_predictions_job() -> None:
         evaluate_due_predictions(session)
 
 
+@guarded("predict_and_paper_trade")
+def predict_and_paper_trade_job() -> None:
+    from crypto_ai.app.services.live_pipeline import run_prediction_and_paper_trade_tick
+
+    with session_scope() as session:
+        result = run_prediction_and_paper_trade_tick(session)
+        if result["status"] != "ok":
+            logger.info("predict_and_paper_trade tick skipped: %s", result["status"])
+
+
 @guarded("daily_report")
 def daily_report_job() -> None:
     from crypto_ai.app.services.reporting import generate_daily_report
@@ -120,6 +130,10 @@ def build_scheduler() -> BackgroundScheduler:
     scheduler.add_job(
         evaluate_predictions_job, "interval", minutes=cfg.get("prediction_interval_minutes", 5),
         id="evaluate_predictions", replace_existing=True,
+    )
+    scheduler.add_job(
+        predict_and_paper_trade_job, "interval", minutes=cfg.get("prediction_interval_minutes", 5),
+        id="predict_and_paper_trade", replace_existing=True,
     )
     scheduler.add_job(
         health_check_job, "interval", minutes=cfg.get("health_check_minutes", 1), id="health_check", replace_existing=True,
