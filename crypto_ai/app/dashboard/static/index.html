@@ -70,6 +70,9 @@
 
   <section id="page-ai">
     <div class="grid" id="ai-grid"></div>
+    <div class="card"><div class="label">Recent signals (model proposal vs. risk-engine verdict)</div>
+      <table><thead><tr><th>Time</th><th>Signal</th><th>Confidence</th><th>Risk</th><th>Reason codes</th></tr></thead><tbody id="signals-table"></tbody></table>
+    </div>
   </section>
 
   <section id="page-backtesting">
@@ -105,22 +108,44 @@ function card(label, value, cls="") {
   return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
 }
 
+function signalClass(sig) {
+  return sig === "BUY" ? "green" : sig === "SELL" ? "red" : "";
+}
+
+function driftLabel(drift) {
+  if (!drift) return "not yet checked";
+  if (drift.status !== "ok") return drift.status;
+  return drift.flagged_for_review
+    ? `<span class="pill down">FLAGGED</span>`
+    : `<span class="pill ok">stable</span>`;
+}
+
 async function renderOverview() {
   const d = await getJSON("/api/overview");
   $("#mode-badge").textContent = d.mode;
   const pos = d.current_position ? `${fmt(d.current_position.quantity, 6)} @ ${fmt(d.current_position.entry_price)}` : "None (flat)";
   const s = d.paper_trading_summary || {};
+  const sig = d.current_signal;
   $("#overview-grid").innerHTML = [
     card("Current price", d.current_price !== null ? "$" + fmt(d.current_price) : "n/a"),
+    card("Current signal", sig ? sig.signal : "none yet", sig ? signalClass(sig.signal) : ""),
+    card("Confidence", sig ? fmt(sig.confidence * 100, 1) + "%" : "n/a"),
+    card("Risk score", sig ? fmt(sig.risk_score, 2) : "n/a"),
     card("Mode", d.mode),
     card("Paper balance (cash)", "$" + fmt(d.paper_balance)),
     card("Current position", pos),
-    card("Total return", fmt(s.total_return_pct) + "%", colorFor(s.total_return_pct || 0)),
+    card("Total P/L", fmt(s.total_return_pct) + "%", colorFor(s.total_return_pct || 0)),
     card("Max drawdown", fmt(s.max_drawdown_pct) + "%"),
     card("Champion model", d.champion_model || "None trained yet"),
+    card("Drift status", driftLabel(d.drift_status)),
     card("Trading enabled", d.trading_enabled ? "Yes" : "No (safe default)"),
     card("Emergency stop", d.emergency_stop ? "ACTIVE" : "Off", d.emergency_stop ? "red" : "green"),
   ].join("");
+  if (sig && sig.reason_codes && sig.reason_codes.length) {
+    $("#overview-grid").innerHTML +=
+      `<div class="card" style="grid-column:1/-1"><div class="label">Why this signal</div>` +
+      `<div class="muted">${sig.reason_codes.join(", ")}</div></div>`;
+  }
 }
 
 async function renderMarket() {
@@ -139,7 +164,22 @@ async function renderAI() {
     card("Directional accuracy", acc.directional_accuracy_pct !== null && acc.directional_accuracy_pct !== undefined ? fmt(acc.directional_accuracy_pct) + "%" : "n/a"),
     card("Evaluated predictions", acc.n_predictions ?? 0),
     card("Local LLM", `<span class="pill ${(d.llm_status?.status||'').toLowerCase()==='ok'?'ok':(d.llm_status?.status==='DOWN'?'down':'degraded')}">${d.llm_status?.status || 'n/a'}</span>`),
+    card("Drift status", driftLabel(d.drift_status)),
   ].join("");
+
+  const dr = d.drift_status;
+  if (dr && dr.status === "ok" && dr.reasons && dr.reasons.length) {
+    $("#ai-grid").innerHTML +=
+      `<div class="card" style="grid-column:1/-1"><div class="label">Drift detail</div>` +
+      `<div class="muted">${dr.reasons.join("<br>")}</div></div>`;
+  }
+  $("#signals-table").innerHTML = (d.recent_signals || []).map(x => `<tr>
+    <td>${new Date(x.timestamp).toLocaleString()}</td>
+    <td class="${signalClass(x.signal)}">${x.signal}</td>
+    <td>${fmt(x.confidence * 100, 1)}%</td>
+    <td>${fmt(x.risk_score, 2)}</td>
+    <td class="muted">${(x.reason_codes || []).join(", ")}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="muted">No signals recorded yet.</td></tr>`;
 }
 
 async function renderBacktesting() {
@@ -186,6 +226,7 @@ async function renderSystem() {
     card("RAM usage", fmt(r.ram_percent, 0) + "%"),
     card("Disk free", fmt(r.disk_free_gb, 1) + " GB"),
     card("Emergency stop", d.emergency_stop?.active ? "ACTIVE" : "Off", d.emergency_stop?.active ? "red" : "green"),
+    card("Drift status", driftLabel(d.drift_status)),
   ].join("");
   $("#system-raw").textContent = JSON.stringify(d, null, 2);
 }

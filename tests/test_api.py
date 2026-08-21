@@ -138,3 +138,49 @@ def test_emergency_stop_activate_and_reset_roundtrip(client):
     resp3 = client.post("/api/emergency-stop/reset")
     assert resp3.json()["active"] is False
     assert is_emergency_stop_active() is False
+
+
+def test_overview_exposes_signal_and_drift_fields(client):
+    """Section 28: the Overview page must show current signal, confidence
+    and risk — these were absent until signals were actually persisted."""
+    resp = client.get("/api/overview")
+    data = resp.json()
+    for key in ("current_signal", "drift_status", "champion_model", "paper_trading_summary"):
+        assert key in data, f"overview missing {key}"
+    # With no signals recorded yet both are None rather than missing/erroring.
+    assert data["current_signal"] is None
+    assert data["drift_status"] is None
+
+
+def test_ai_page_exposes_recent_signals_and_drift(client):
+    data = client.get("/api/ai").json()
+    assert "recent_signals" in data
+    assert "drift_status" in data
+    assert data["recent_signals"] == []
+
+
+def test_system_page_exposes_drift_status(client):
+    assert "drift_status" in client.get("/api/system").json()
+
+
+def test_overview_shows_persisted_signal(client):
+    import datetime as dt
+    from crypto_ai.database.repositories.signals_repo import save_signal
+    from crypto_ai.strategies.signal_engine import build_signal
+
+    session = client._test_sessionmaker()
+    sig = build_signal(
+        symbol="BTC/USDT", timestamp=dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc),
+        predicted_class="BUY", confidence=0.77, risk_score=0.15,
+        model_version="model_001", strategy_version="s1",
+    )
+    save_signal(session, sig)
+    session.commit()
+    session.close()
+
+    data = client.get("/api/overview").json()
+    assert data["current_signal"]["signal"] == "BUY"
+    assert data["current_signal"]["confidence"] == 0.77
+
+    ai = client.get("/api/ai").json()
+    assert len(ai["recent_signals"]) == 1
