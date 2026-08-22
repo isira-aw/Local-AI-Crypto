@@ -107,12 +107,24 @@ class LiveCollector:
         connect_factory=None,
         backfill_on_reconnect: bool = True,
         max_backoff_seconds: float = 60.0,
+        initial_backoff_seconds: float = 1.0,
+        healthy_session_seconds: float = 60.0,
+        max_reconnects: int | None = None,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
         self.connect_factory = connect_factory
         self.backfill_on_reconnect = backfill_on_reconnect
         self.max_backoff_seconds = max_backoff_seconds
+        self.initial_backoff_seconds = initial_backoff_seconds
+        # A connection only counts as "healthy" — and therefore only resets
+        # the backoff — if it stayed up this long. Resetting on connect
+        # alone lets a socket that closes immediately reconnect forever with
+        # no delay.
+        self.healthy_session_seconds = healthy_session_seconds
+        # None = reconnect forever (production). A bounded value lets a test
+        # or harness drive the loop deterministically.
+        self.max_reconnects = max_reconnects
         self._stop = asyncio.Event()
         self.candles_written = 0
         self.reconnections = 0
@@ -152,26 +164,42 @@ class LiveCollector:
             logger.warning("Post-reconnect backfill failed (will retry on next reconnect): %s", exc)
 
     async def run(self) -> None:
-        backoff = 1.0
+        """
+        Connect, stream, and reconnect forever until stopped.
+
+        The reconnect delay is applied after EVERY disconnect, including a
+        clean close by the server. That matters: Binance closes streams
+        periodically, and an earlier version only slept in the error path,
+        so a clean close fell straight back into connect(). Exercising this
+        end-to-end produced 182,660 reconnects and matching "connected"
+        events in about twenty minutes — a storm against the exchange and
+        the events table. The backoff is also only reset after a connection
+        that actually stayed up (`healthy_session_seconds`), so a socket
+        that drops instantly cannot reset its way out of the delay.
+        """
+        backoff = self.initial_backoff_seconds
         first_connection = True
 
         while not self._stop.is_set():
+            connected_at = None
+            disconnect_reason = "unknown"
+
             try:
                 factory = self.connect_factory or self._default_connect_factory
                 async with factory() as ws:
+                    connected_at = asyncio.get_event_loop().time()
                     logger.info("Live collector connected: %s %s", self.symbol, self.timeframe)
-                    if not first_connection:
-                        self.reconnections += 1
-                        if self.backfill_on_reconnect:
-                            self._backfill_gap()
-                    first_connection = False
-                    backoff = 1.0  # reset only after a successful connection
 
-                    with session_scope() as session:
-                        log_event(
-                            session, component="live_collector", event="connected", severity="INFO",
-                            message=f"Streaming {self.symbol} {self.timeframe}",
-                        )
+                    if not first_connection and self.backfill_on_reconnect:
+                        self._backfill_gap()
+                    first_connection = False
+
+                    with contextlib.suppress(Exception):
+                        with session_scope() as session:
+                            log_event(
+                                session, component="live_collector", event="connected", severity="INFO",
+                                message=f"Streaming {self.symbol} {self.timeframe}",
+                            )
 
                     async for raw in ws:
                         if self._stop.is_set():
@@ -181,28 +209,44 @@ class LiveCollector:
                         except Exception as exc:  # noqa: BLE001 - one bad message must not drop the stream
                             logger.warning("Failed to handle stream message: %s", exc)
 
+                # Falling out of `async for` without an exception means the
+                # peer closed the stream. That is a disconnect, not success.
+                disconnect_reason = "stream closed by peer"
+
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reconnect on ANY transport error
-                if self._stop.is_set():
-                    break
-                logger.warning(
-                    "Live collector disconnected (%s). Reconnecting in %.1fs", exc, backoff,
-                )
-                with contextlib.suppress(Exception):
-                    with session_scope() as session:
-                        log_event(
-                            session, component="live_collector", event="disconnected", severity="WARNING",
-                            message=str(exc), context={"retry_in_seconds": backoff},
-                        )
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2, self.max_backoff_seconds)
+                disconnect_reason = str(exc)
 
-        logger.info("Live collector stopped (%s candles written, %s reconnections).",
-                    self.candles_written, self.reconnections)
+            if self._stop.is_set():
+                break
+
+            self.reconnections += 1
+            if self.max_reconnects is not None and self.reconnections > self.max_reconnects:
+                logger.info("Reached max_reconnects=%s; stopping collector.", self.max_reconnects)
+                break
+
+            session_seconds = (
+                asyncio.get_event_loop().time() - connected_at if connected_at is not None else 0.0
+            )
+            if session_seconds >= self.healthy_session_seconds:
+                backoff = self.initial_backoff_seconds
+
+            logger.warning(
+                "Live collector disconnected after %.1fs (%s). Reconnecting in %.1fs",
+                session_seconds, disconnect_reason, backoff,
+            )
+
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+            except asyncio.TimeoutError:
+                pass
+            backoff = min(backoff * 2, self.max_backoff_seconds)
+
+        logger.info(
+            "Live collector stopped (%s candles written, %s reconnections).",
+            self.candles_written, self.reconnections,
+        )
 
 
 def run_collector(symbol: str | None = None, timeframe: str | None = None) -> None:

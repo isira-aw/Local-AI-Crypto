@@ -54,6 +54,32 @@ checklist and blocks unless **every single item** passes:
 [ ] REAL_TRADING_ENABLED=true
 ```
 
+### Check it any time
+
+```bash
+python run.py gate-status
+```
+
+This prints every item with the **evidence behind it**, not just a verdict.
+
+### Three items are evidence-based, not self-declared
+
+Most items are human attestations — only you know whether you actually
+tested the emergency stop. Three are derived from the database and cannot
+be talked into passing:
+
+- **paper-trading days / trade count** come from the paper-trading epoch
+  marker (see `docs/PAPER_TRADING.md`), so history produced before a reset
+  is excluded automatically.
+- **walk-forward passed** is read from the current champion's stored fold
+  results.
+- **exchange connection stable** requires health checks recorded against
+  the *real* Binance API. Probes made through an injected or simulated
+  client are tagged as such and can never satisfy it — so running the
+  validation harness, however green, will not tick this box. It stays
+  BLOCKED until the system has actually talked to Binance on real
+  infrastructure.
+
 All thresholds are configurable in `risk.yaml` under `live_trading_gate:` —
 but loosening them doesn't make a strategy more proven, it just lowers the
 bar you're checking it against. Change them thoughtfully, not to make a

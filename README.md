@@ -80,7 +80,7 @@ docker-compose.yml  Postgres (+ optional backend/scheduler containers), host-mou
 
 ## What's implemented vs. what's a documented next step
 
-Implemented and tested (187 tests, `pytest`, plus an end-to-end validation
+Implemented and tested (204 tests, `pytest`, plus an end-to-end validation
 harness at `scripts/e2e_validation.py` that runs the whole workflow against a
 simulated exchange): the full research loop —
 historical data download/validation, feature/label generation, walk-forward
@@ -127,6 +127,9 @@ python run.py drift-check     # feature-distribution + accuracy drift check
 python run.py paper           # one manual paper-trading tick
 python run.py report          # daily report
 python run.py research-report # weekly / Month-1 report (--days 7 or 30)
+python run.py fold-report     # per-fold walk-forward breakdown
+python run.py gate-status     # live-trading checklist + the evidence behind it
+python run.py reset-paper-trading --reason "..."   # reset the paper clock to day zero
 python run.py backup          # backup database + config + models
 python run.py restore <file>  # restore (dry run by default; --apply to commit)
 python run.py verify-backup <file>

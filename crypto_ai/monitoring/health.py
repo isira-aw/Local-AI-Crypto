@@ -28,6 +28,11 @@ STATUS_OK = "OK"
 STATUS_DEGRADED = "DEGRADED"
 STATUS_DOWN = "DOWN"
 
+# Provenance of an exchange health probe. Only SOURCE_REAL counts towards
+# the live-trading gate — see has_verified_real_exchange_connectivity().
+SOURCE_REAL = "binance_live_api"
+SOURCE_SIMULATED = "injected_or_simulated"
+
 
 def _record(session: Session, component: str, status: str, latency_ms: float | None, details: dict) -> HealthCheck:
     row = HealthCheck(
@@ -66,15 +71,26 @@ def check_exchange(session: Session, client=None) -> HealthCheck:
         source=client.source if client is not None else None,
         retry_policy=RetryPolicy(max_attempts=1),
     ) if client is not None else MarketDataClient(retry_policy=RetryPolicy(max_attempts=1))
+
+    # Record whether this probe actually reached Binance or went through an
+    # injected/simulated source. The live-trading gate's
+    # "exchange connection stable" item may ONLY be satisfied by real
+    # probes — otherwise a test harness or simulator could tick off a
+    # safety check that exists to prove real connectivity.
+    from crypto_ai.exchange.market_data import CcxtBinanceSource
+
+    is_real = isinstance(probe.source, CcxtBinanceSource)
+    source_kind = SOURCE_REAL if is_real else SOURCE_SIMULATED
+
     start = time.monotonic()
     try:
         probe.fetch_ohlcv_page(
             "BTC/USDT", "5m", dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=30), limit=1
         )
         latency_ms = (time.monotonic() - start) * 1000
-        return _record(session, "exchange", STATUS_OK, latency_ms, {})
+        return _record(session, "exchange", STATUS_OK, latency_ms, {"source": source_kind})
     except Exception as exc:  # noqa: BLE001
-        return _record(session, "exchange", STATUS_DOWN, None, {"error": str(exc)})
+        return _record(session, "exchange", STATUS_DOWN, None, {"error": str(exc), "source": source_kind})
 
 
 def check_llm(session: Session) -> HealthCheck:
@@ -93,3 +109,47 @@ def run_all_health_checks(session: Session, exchange_client=None) -> dict:
         pass
     session.commit()
     return {name: {"status": c.status, "latency_ms": c.latency_ms} for name, c in checks.items()}
+
+
+def has_verified_real_exchange_connectivity(
+    session: Session, min_consecutive_ok: int = 20, within_days: int = 7,
+) -> tuple[bool, str]:
+    """
+    Section 59's "exchange connection stable" item.
+
+    Returns (satisfied, explanation). This deliberately CANNOT be satisfied
+    by a simulated or injected client: it requires health checks whose
+    recorded source is the real Binance API. Running the end-to-end
+    validation harness — which injects a fake exchange — will never tick
+    this box, which is the point.
+    """
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=within_days)
+    rows = (
+        session.query(HealthCheck)
+        .filter(HealthCheck.component == "exchange", HealthCheck.timestamp >= cutoff.replace(tzinfo=None))
+        .order_by(HealthCheck.timestamp.desc())
+        .limit(min_consecutive_ok * 3)
+        .all()
+    )
+
+    real_rows = [r for r in rows if (r.details or {}).get("source") == SOURCE_REAL]
+    if not real_rows:
+        return False, (
+            f"no health checks against the real Binance API in the last {within_days} days "
+            f"({len(rows)} exchange check(s) found, all simulated/injected). "
+            f"This item cannot be satisfied by the validation harness."
+        )
+
+    recent_ok = 0
+    for r in real_rows:
+        if r.status == STATUS_OK:
+            recent_ok += 1
+        else:
+            break
+
+    if recent_ok < min_consecutive_ok:
+        return False, (
+            f"only {recent_ok} consecutive successful real-API checks "
+            f"(need {min_consecutive_ok} within {within_days} days)"
+        )
+    return True, f"{recent_ok} consecutive successful checks against the real Binance API"

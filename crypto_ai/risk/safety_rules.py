@@ -25,6 +25,10 @@ class LiveTradingGateResult:
     allowed: bool
     checklist: dict = field(default_factory=dict)  # item -> bool
     blocking_reasons: list[str] = field(default_factory=list)
+    # Populated by evaluate_live_trading_gate_from_db(): the derived values
+    # behind the checklist, so a refusal can be explained rather than just
+    # asserted.
+    evidence: dict = field(default_factory=dict)
 
 
 def evaluate_live_trading_gate(
@@ -79,6 +83,103 @@ def evaluate_live_trading_gate(
     allowed = not blocking_reasons
 
     return LiveTradingGateResult(allowed=allowed, checklist=checklist, blocking_reasons=blocking_reasons)
+
+
+def evaluate_live_trading_gate_from_db(
+    session,
+    emergency_stop_tested: bool,
+    recovery_tested: bool,
+    backup_restore_tested: bool,
+    api_withdrawal_disabled: bool,
+    regulatory_check_acknowledged: bool,
+    user_explicitly_enabled_live: bool,
+    walk_forward_passed: bool | None = None,
+    risk_config: dict | None = None,
+) -> LiveTradingGateResult:
+    """
+    Evaluate the gate using values DERIVED FROM THE DATABASE wherever that
+    is possible, instead of trusting whatever the caller passes in.
+
+    Three items are now evidence-based rather than caller-asserted:
+
+      * paper-trading days and trade count come from the epoch marker
+        (app/services/paper_reset.py), so history produced before a reset
+        does not count;
+      * "exchange connection stable" requires health checks recorded
+        against the REAL Binance API — a simulated/injected client can
+        never satisfy it;
+      * walk-forward pass is read from the current champion's stored
+        results.
+
+    The remaining items are genuine human attestations (did you actually
+    test the emergency stop? is withdrawal disabled on the key?) and still
+    have to be passed in — but they default to nothing, so forgetting one
+    fails closed.
+    """
+    from crypto_ai.app.services.paper_reset import summarize_since_epoch
+    from crypto_ai.models.registry import registry
+    from crypto_ai.monitoring.health import has_verified_real_exchange_connectivity
+    from crypto_ai.paper_trading.simulator import summarize_paper_trading
+    from crypto_ai.config.loader import get_settings
+
+    cfg = risk_config or get_risk_config()
+    settings = get_settings()
+    symbol = settings.get("exchange.symbol", "BTC/USDT")
+
+    epoch = summarize_since_epoch(session)
+    paper = summarize_paper_trading(session, symbol)
+    exchange_ok, exchange_reason = has_verified_real_exchange_connectivity(session)
+
+    if walk_forward_passed is None:
+        champion = registry.get_champion(session, "btc_direction_classifier")
+        walk_forward_passed = bool(
+            champion and (champion.walk_forward_results or {}).get("overall_pass")
+        )
+
+    critical_days = _days_since_last_critical_error(session)
+
+    result = evaluate_live_trading_gate(
+        paper_trading_days=epoch["days_since_epoch"],
+        paper_trade_count=epoch["closed_trades_since_epoch"],
+        paper_net_return_pct=paper.get("total_return_pct") or 0.0,
+        paper_max_drawdown_pct=paper.get("max_drawdown_pct") or 100.0,
+        walk_forward_passed=walk_forward_passed,
+        days_since_critical_error=critical_days,
+        regulatory_check_acknowledged=regulatory_check_acknowledged,
+        exchange_connection_stable=exchange_ok,
+        emergency_stop_tested=emergency_stop_tested,
+        recovery_tested=recovery_tested,
+        backup_restore_tested=backup_restore_tested,
+        api_withdrawal_disabled=api_withdrawal_disabled,
+        user_explicitly_enabled_live=user_explicitly_enabled_live,
+        risk_config=cfg,
+    )
+    result.evidence = {
+        "paper_trading_epoch": epoch,
+        "exchange_connectivity": exchange_reason,
+        "days_since_critical_error": critical_days,
+        "walk_forward_passed": walk_forward_passed,
+    }
+    return result
+
+
+def _days_since_last_critical_error(session) -> int:
+    import datetime as dt
+
+    from crypto_ai.database.models.monitoring import SystemEvent
+
+    row = (
+        session.query(SystemEvent)
+        .filter(SystemEvent.severity.in_(["ERROR", "CRITICAL"]))
+        .order_by(SystemEvent.timestamp.desc())
+        .first()
+    )
+    if row is None:
+        return 10_000  # nothing has ever gone critically wrong
+    last = row.timestamp
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    return int((dt.datetime.now(dt.timezone.utc) - last).total_seconds() // 86400)
 
 
 def max_live_capital_usdt(risk_config: dict | None = None) -> float:

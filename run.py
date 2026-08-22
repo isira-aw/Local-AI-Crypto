@@ -221,6 +221,100 @@ def collect_live(
     run_collector(symbol, timeframe)
 
 
+@app.command("reset-paper-trading")
+def reset_paper_trading_cmd(
+    reason: str = typer.Option(..., help="Why the clock is being reset (recorded in the audit trail)"),
+    keep_history: bool = typer.Option(False, "--keep-history", help="Keep old trades in the DB (still excluded from the gate)"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt"),
+):
+    """Reset the paper-trading clock to day zero (Section 31 evidence window)."""
+    from crypto_ai.app.services.paper_reset import reset_paper_trading, summarize_since_epoch
+    from crypto_ai.database.base import session_scope
+
+    console.rule("Reset paper-trading clock")
+    with session_scope() as session:
+        before = summarize_since_epoch(session)
+    console.print(f"Current: {before['closed_trades_since_epoch']} closed trades over "
+                  f"{before['days_since_epoch']} day(s), counting from {before['counting_from']}.")
+    if not keep_history:
+        console.print("[yellow]This will DELETE paper trades and portfolio snapshots[/yellow] "
+                      "(a backup archive is taken first).")
+    if not yes and not typer.confirm("Reset the paper-trading clock to zero?"):
+        console.print("Aborted.")
+        raise typer.Exit(1)
+
+    with session_scope() as session:
+        marker = reset_paper_trading(session, reason=reason, purge_history=not keep_history)
+    console.print(f"[green]Day zero set:[/green] {marker['started_at']}")
+    console.print(f"  reason  : {marker['reason']}")
+    console.print(f"  discarded: {marker['discarded']}")
+    console.print(f"  backup  : {marker['backup_archive']}")
+    console.print("\nThe live-trading gate now counts days and trades from this moment.")
+
+
+@app.command("gate-status")
+def gate_status():
+    """Show the live-trading checklist with the evidence behind each item (Section 59)."""
+    from crypto_ai.database.base import session_scope
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate_from_db
+
+    with session_scope() as session:
+        # Human attestations default to False — the gate fails closed.
+        result = evaluate_live_trading_gate_from_db(
+            session,
+            emergency_stop_tested=False, recovery_tested=False,
+            backup_restore_tested=False, api_withdrawal_disabled=False,
+            regulatory_check_acknowledged=False, user_explicitly_enabled_live=False,
+        )
+    console.rule("Live-trading gate")
+    table = Table()
+    table.add_column("Checklist item"); table.add_column("Status")
+    for item, ok in result.checklist.items():
+        table.add_row(item, "[green]PASS[/green]" if ok else "[red]BLOCKED[/red]")
+    console.print(table)
+    console.print(f"\nOverall: {'[green]ALLOWED[/green]' if result.allowed else '[red]LIVE TRADING BLOCKED[/red]'}")
+    console.print("\nEvidence:")
+    for k, v in result.evidence.items():
+        console.print(f"  {k}: {v}")
+
+
+@app.command("fold-report")
+def fold_report(model_name: str = typer.Option("btc_direction_classifier")):
+    """Per-fold walk-forward breakdown for every trained model version."""
+    from crypto_ai.database.base import session_scope
+    from crypto_ai.database.models.ml import MLModel, ModelVersion
+    from sqlalchemy import select
+
+    with session_scope() as session:
+        model = session.execute(select(MLModel).where(MLModel.name == model_name)).scalar_one_or_none()
+        if model is None:
+            console.print(f"[yellow]No model named {model_name}. Run: python run.py train[/yellow]")
+            raise typer.Exit(1)
+        versions = session.query(ModelVersion).filter(ModelVersion.model_id == model.id).all()
+        rows = [(v.version_label, v.algorithm, v.status, v.walk_forward_results or {}) for v in versions]
+
+    for label, algo, status, wf in rows:
+        console.rule(f"{label} — {algo} — {status}")
+        if not wf.get("folds"):
+            console.print("[dim]no fold results recorded[/dim]"); continue
+        table = Table()
+        for col in ("fold", "precision", "return %", "drawdown %", "sharpe", "trades", "passed", "why not"):
+            table.add_column(col)
+        for f in wf["folds"]:
+            c = f.get("classification_metrics", {}); b = f.get("backtest_metrics", {})
+            table.add_row(
+                str(f.get("fold_index")), f"{c.get('precision_macro', 0):.3f}",
+                f"{b.get('total_return_pct', 0):.2f}", f"{b.get('max_drawdown_pct', 0):.2f}",
+                f"{b.get('sharpe_ratio', 0):.2f}", str(b.get("n_trades", 0)),
+                "yes" if f.get("passed") else "no", "; ".join(f.get("reasons", []))[:60],
+            )
+        console.print(table)
+        console.print(f"folds passed: {wf.get('n_passed')}/{wf.get('n_folds')}  "
+                      f"overall_pass={wf.get('overall_pass')}")
+        if wf.get("blocking_reason"):
+            console.print(f"[yellow]{wf['blocking_reason']}[/yellow]")
+
+
 @app.command("research-report")
 def research_report_cmd(
     days: int = typer.Option(30, help="Reporting window in days (7 = weekly, 30 = Month-1)"),
