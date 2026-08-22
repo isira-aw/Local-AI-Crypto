@@ -51,6 +51,9 @@ from crypto_ai.database.repositories.events_repo import log_event
 from crypto_ai.features.feature_pipeline import FEATURE_VERSION, feature_columns
 from crypto_ai.features.labels import LABEL_VERSION
 from crypto_ai.models.evaluation.criteria import aggregate_walk_forward, evaluate_fold
+from crypto_ai.models.evaluation.multiple_testing import (
+    DEFAULT_MIN_DSR, collect_trial_sharpes, count_trials, deflated_sharpe,
+)
 from crypto_ai.models.registry import registry
 from crypto_ai.models.training.models import CANDIDATE_ALGORITHMS, build_model
 from crypto_ai.models.training.walk_forward import assert_no_leakage, generate_walk_forward_folds
@@ -333,13 +336,53 @@ def run_training_pipeline(
     session.commit()
 
     candidates = [r for r in results if r.get("overall_pass")]
-    promotion = maybe_promote_champion(session, model_name, candidates)
+
+    # Multiple-testing correction (Section 15). Promoting the best of N
+    # variants without deflating for N is how a worthless model gets
+    # promoted on noise. This is applied to the promotion decision itself,
+    # not merely reported.
+    prior_variants = _count_prior_variants(session, model_name, exclude=len(results))
+    n_trials = count_trials(results, prior_variants=prior_variants)
+    trial_sharpes = collect_trial_sharpes(results)
+
+    promotion = maybe_promote_champion(
+        session, model_name, candidates,
+        n_trials=n_trials, trial_sharpes=trial_sharpes, timeframe=timeframe,
+    )
     session.commit()
 
-    return {"model_name": model_name, "results": results, "promotion": promotion}
+    return {
+        "model_name": model_name,
+        "results": results,
+        "promotion": promotion,
+        "multiple_testing": {
+            "n_trials": n_trials,
+            "prior_variants": prior_variants,
+            "trial_sharpes_annual": [round(x, 4) for x in trial_sharpes],
+        },
+    }
 
 
-def maybe_promote_champion(session: Session, model_name: str, candidate_results: list[dict]) -> dict:
+def _count_prior_variants(session: Session, model_name: str, exclude: int = 0) -> int:
+    """
+    Variants previously registered for this model. Counted so the
+    correction reflects the whole multiple-testing surface across the
+    project's life, not just the current run.
+    """
+    from crypto_ai.database.models.ml import MLModel, ModelVersion
+    from sqlalchemy import select
+
+    model = session.execute(select(MLModel).where(MLModel.name == model_name)).scalar_one_or_none()
+    if model is None:
+        return 0
+    total = session.query(ModelVersion).filter(ModelVersion.model_id == model.id).count()
+    return max(0, total - exclude)
+
+
+def maybe_promote_champion(
+    session: Session, model_name: str, candidate_results: list[dict],
+    n_trials: int = 1, trial_sharpes: list[float] | None = None, timeframe: str = "5m",
+) -> dict:
     """
     Compare CANDIDATEs against the current CHAMPION on final-test Sharpe
     ratio and promote only if a candidate is strictly better (Section
@@ -365,6 +408,33 @@ def maybe_promote_champion(session: Session, model_name: str, candidate_results:
                 "reason": f"best candidate sharpe {best_sharpe:.3f} did not beat champion {champion_sharpe:.3f}",
             }
 
+    # --- multiple-testing gate -------------------------------------
+    criteria = get_settings().get("models.promotion_criteria", {})
+    dsr_threshold = criteria.get("min_deflated_sharpe_probability", DEFAULT_MIN_DSR)
+    n_observations = (
+        best.get("final_test_metrics", {}).get("backtest", {}).get("n_observations")
+        or get_settings().get("walk_forward.final_test_bars", 4000)
+    )
+    mt = deflated_sharpe(
+        observed_sharpe_annual=best_sharpe,
+        n_trials=n_trials,
+        n_observations=n_observations,
+        timeframe=timeframe,
+        trial_sharpes_annual=trial_sharpes or [],
+        threshold=dsr_threshold,
+    )
+    if not mt.passed:
+        log_event(
+            session, component="training", event="promotion_blocked_by_multiple_testing",
+            severity="INFO", message=mt.reason,
+            context={"model_name": model_name, **mt.to_dict()},
+        )
+        return {
+            "promoted": False,
+            "reason": mt.reason,
+            "multiple_testing": mt.to_dict(),
+        }
+
     version = (
         session.query(registry.ModelVersion)
         .filter(registry.ModelVersion.version_label == best["version_label"])
@@ -372,10 +442,14 @@ def maybe_promote_champion(session: Session, model_name: str, candidate_results:
         .filter(registry.MLModel.name == model_name)
         .one()
     )
+    version.metrics = {**(version.metrics or {}), "multiple_testing": mt.to_dict()}
     registry.promote_to_champion(session, version)
     log_event(
         session, component="training", event="champion_promoted", severity="INFO",
         message=f"{version.version_label} promoted to champion (sharpe={best_sharpe:.3f})",
         context={"model_name": model_name, "version": version.version_label},
     )
-    return {"promoted": True, "version_label": version.version_label, "sharpe_ratio": best_sharpe}
+    return {
+        "promoted": True, "version_label": version.version_label,
+        "sharpe_ratio": best_sharpe, "multiple_testing": mt.to_dict(),
+    }

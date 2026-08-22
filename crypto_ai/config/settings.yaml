@@ -100,6 +100,12 @@ models:
     # A single-fold "100% passed" proves nothing about robustness across
     # market regimes, so a run with fewer folds than this can never count
     # as an overall pass regardless of its metrics.
+    # Multiple-testing correction (Section 15). Training three algorithms
+    # and promoting the best inflates that winner's Sharpe purely because
+    # three things were tried. A candidate must clear this deflated-Sharpe
+    # probability — the chance its Sharpe is real rather than the best of N
+    # noisy trials — before it can become champion.
+    min_deflated_sharpe_probability: 0.95
     min_folds_required: 3
     min_folds_passed_pct: 0.8      # must pass on >=80% of folds
     min_precision: 0.52             # only slightly better than coin-flip is fine;

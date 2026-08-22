@@ -96,6 +96,13 @@ def wait_for_database(max_attempts: int = 10, base_delay_seconds: float = 2.0) -
                 conn.execute(text("SELECT 1"))
             return True
         except Exception as exc:  # noqa: BLE001 - we deliberately retry any error
+            if attempt >= max_attempts:
+                # Do NOT sleep after the final attempt — there is nothing
+                # left to wait for. With the defaults that last delay is
+                # 1024s, which doubled the time before the app could report
+                # the database unreachable (~17 min -> ~34 min).
+                logger.error("Database still unreachable after %s attempts: %s", max_attempts, exc)
+                break
             delay = base_delay_seconds * (2 ** (attempt - 1))
             logger.warning(
                 "Database not ready (attempt %s/%s): %s. Retrying in %.1fs",

@@ -144,15 +144,32 @@ modest machine; they compete for the same CPU and RAM.
 
 ## Multiple-testing correction
 
-If you train 3 algorithms, tune thresholds, or try several feature sets and
-report only the best result, that result is statistically biased to look
-better than it really is — simply because you tried more things. Section 15
-requires correcting for this. `backtesting/metrics.py:deflated_sharpe_ratio`
-implements an approximation of the Deflated Sharpe Ratio (Bailey & Lopez de
-Prado): it estimates the probability that an observed Sharpe ratio is
-genuinely positive *after* discounting for how many variants were tried.
-Treat anything below ~0.95 as "not statistically convincing" before you
-trust it.
+If you train 3 algorithms and promote the best, that winner's Sharpe is
+biased upward purely because three things were tried — the maximum of N
+noisy estimates exceeds the truth even when every variant is worthless.
+
+This is enforced, not just reported: `models/evaluation/multiple_testing.py`
+computes a Deflated Sharpe Ratio (Bailey & Lopez de Prado) and
+`maybe_promote_champion()` **refuses to promote** any candidate that cannot
+clear `models.promotion_criteria.min_deflated_sharpe_probability`
+(default 0.95). A blocked promotion is logged as
+`promotion_blocked_by_multiple_testing` with the full numbers.
+
+Two details that matter for correctness:
+
+- **Trial count is cumulative.** It counts the algorithms in this run *plus*
+  every variant previously registered for the model. If you have trained
+  twenty models over six weeks and are promoting the best, the
+  multiple-testing surface is twenty, not three.
+- **Units are converted.** The standard error in the DSR formula is defined
+  for a per-period Sharpe, while this project reports annualized ones.
+  Treating an annualized value as per-period inflates DSR toward 1.0 and
+  would silently defeat the check, so the value is de-annualized first.
+
+With fewer than four trials the cross-sectional spread of trial Sharpes is
+dominated by the winner itself — circular, since a strong result would
+inflate its own bar — so below that count the standard estimation-noise
+assumption is used instead.
 
 ## Too-good-to-be-true detection (Section 47)
 
