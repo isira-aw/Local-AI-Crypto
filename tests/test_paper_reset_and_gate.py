@@ -190,3 +190,131 @@ def test_gate_uses_epoch_not_raw_table_totals(db_session):
     )
     assert result.evidence["paper_trading_epoch"]["closed_trades_since_epoch"] == 0
     assert "enough_paper_trades" in result.blocking_reasons
+
+
+# ---------------------------------------------------------------------
+# Items 1, 2, 6, 8: no more self-declared or vacuous passes
+# ---------------------------------------------------------------------
+def _gate_kwargs(**overrides):
+    kw = dict(
+        paper_trading_days=99, paper_trade_count=500, paper_net_return_pct=10.0,
+        paper_max_drawdown_pct=5.0, walk_forward_passed=True, days_since_critical_error=99,
+        regulatory_check_acknowledged=True, exchange_connection_stable=True,
+        emergency_stop_tested=True, recovery_tested=True, backup_restore_tested=True,
+        api_withdrawal_disabled=True, user_explicitly_enabled_live=True,
+        historical_data_validated=True, backtest_completed=True,
+        days_of_operating_history=90.0,
+    )
+    kw.update(overrides)
+    return kw
+
+
+def test_item1_and_2_are_no_longer_hardcoded_true():
+    """
+    Both were literally `True` in the checklist dict. Omitting the evidence
+    must now block, not silently pass.
+    """
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate
+
+    r = evaluate_live_trading_gate(**_gate_kwargs(
+        historical_data_validated=False, backtest_completed=False))
+    assert "historical_data_validated" in r.blocking_reasons
+    assert "backtest_completed" in r.blocking_reasons
+
+
+def test_item1_and_2_default_to_blocking_when_not_supplied():
+    """A caller that forgets to pass evidence must fail closed."""
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate
+
+    kw = _gate_kwargs()
+    kw.pop("historical_data_validated")
+    kw.pop("backtest_completed")
+    r = evaluate_live_trading_gate(**kw)
+    assert "historical_data_validated" in r.blocking_reasons
+    assert "backtest_completed" in r.blocking_reasons
+
+
+def test_item6_zero_trades_is_unknown_not_pass():
+    """0.0% return from an account that never traded is absent, not passing."""
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate
+
+    r = evaluate_live_trading_gate(**_gate_kwargs(
+        paper_trade_count=0, paper_net_return_pct=0.0))
+    assert "paper_net_return_acceptable" in r.blocking_reasons
+
+    r_none = evaluate_live_trading_gate(**_gate_kwargs(paper_net_return_pct=None))
+    assert "paper_net_return_acceptable" in r_none.blocking_reasons
+
+
+def test_item7_none_drawdown_still_fails_closed():
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate
+
+    r = evaluate_live_trading_gate(**_gate_kwargs(paper_max_drawdown_pct=None))
+    assert "paper_drawdown_acceptable" in r.blocking_reasons
+
+
+def test_item8_requires_observation_not_just_absence_of_errors():
+    """
+    A fresh database has no errors because it has no history. 14 clean days
+    requires 14 days of watching.
+    """
+    from crypto_ai.risk.safety_rules import evaluate_live_trading_gate
+
+    r = evaluate_live_trading_gate(**_gate_kwargs(
+        days_since_critical_error=10_000, days_of_operating_history=0.7))
+    assert "no_recent_critical_errors" in r.blocking_reasons
+
+    ok = evaluate_live_trading_gate(**_gate_kwargs(
+        days_since_critical_error=30, days_of_operating_history=30.0))
+    assert "no_recent_critical_errors" not in ok.blocking_reasons
+
+
+def test_historical_data_check_blocks_on_empty_database(db_session):
+    from crypto_ai.risk.safety_rules import check_historical_data_validated
+
+    ok, reason = check_historical_data_validated(db_session, "BTC/USDT", "5m")
+    assert ok is False
+    assert "no BTC/USDT 5m market data" in reason
+
+
+def test_historical_data_check_blocks_on_too_little_data(db_session):
+    import datetime as dt
+    from crypto_ai.database.repositories.market_data_repo import upsert_candles
+    from crypto_ai.risk.safety_rules import check_historical_data_validated
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    upsert_candles(db_session, "BTC/USDT", "5m", [
+        {"timestamp": start + dt.timedelta(minutes=5 * i), "open": 100.0, "high": 101.0,
+         "low": 99.0, "close": 100.0, "volume": 1.0} for i in range(50)])
+    db_session.commit()
+
+    ok, reason = check_historical_data_validated(db_session, "BTC/USDT", "5m")
+    assert ok is False
+    assert "need >=" in reason
+
+
+def test_backtest_check_blocks_until_a_run_is_recorded(db_session):
+    import datetime as dt
+    from crypto_ai.database.models.trading import BacktestRun
+    from crypto_ai.risk.safety_rules import check_backtest_completed
+
+    ok, reason = check_backtest_completed(db_session, "BTC/USDT")
+    assert ok is False and "no backtest run recorded" in reason
+
+    now = dt.datetime.now(dt.timezone.utc)
+    db_session.add(BacktestRun(
+        strategy_version="s1", symbol="BTC/USDT", timeframe="5m",
+        start_time=now - dt.timedelta(days=1), end_time=now,
+        initial_balance=1000.0, final_balance=1010.0,
+        metrics={"n_trades": 42, "total_return_pct": 1.0},
+    ))
+    db_session.commit()
+
+    ok2, reason2 = check_backtest_completed(db_session, "BTC/USDT")
+    assert ok2 is True and "42 trades" in reason2
+
+
+def test_days_of_operating_history_is_zero_on_fresh_database(db_session):
+    from crypto_ai.risk.safety_rules import days_of_operating_history
+
+    assert days_of_operating_history(db_session) == 0.0

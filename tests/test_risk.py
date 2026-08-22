@@ -147,6 +147,11 @@ def _full_pass_gate_kwargs(**overrides):
         backup_restore_tested=True,
         api_withdrawal_disabled=True,
         user_explicitly_enabled_live=True,
+        # Items 1, 2 and 8 now require positive evidence rather than being
+        # hardcoded True / satisfied by an empty database.
+        historical_data_validated=True,
+        backtest_completed=True,
+        days_of_operating_history=90.0,
     )
     kwargs.update(overrides)
     return kwargs

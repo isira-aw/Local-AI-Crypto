@@ -62,7 +62,7 @@ python run.py gate-status
 
 This prints every item with the **evidence behind it**, not just a verdict.
 
-### Three items are evidence-based, not self-declared
+### Six items are evidence-based, not self-declared
 
 Most items are human attestations — only you know whether you actually
 tested the emergency stop. Three are derived from the database and cannot
@@ -79,6 +79,12 @@ be talked into passing:
   validation harness, however green, will not tick this box. It stays
   BLOCKED until the system has actually talked to Binance on real
   infrastructure.
+
+Every item fails closed. Where a measurement is absent — no trades, no
+data, no observation window — the gate reports BLOCKED rather than PASS,
+because "unknown" must never read as "satisfied" on a checklist whose
+purpose is gating real money. A paper-trading return of 0.00% from an
+account that never traded is an absent result, not a passing one.
 
 All thresholds are configurable in `risk.yaml` under `live_trading_gate:` —
 but loosening them doesn't make a strategy more proven, it just lowers the
